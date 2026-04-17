@@ -1,0 +1,32 @@
+{
+  "name": "atlas-slack",
+  "version": "0.1.1",
+  "description": "Full Slack Web API access via MCP - generic gateway for all 200+ methods plus convenience tools for reactions, status, reminders, pins, channels, and more.",
+  "author": {
+    "name": "Dmitry Kushnikov"
+  },
+  "license": "MIT",
+  "keywords": ["slack", "api", "reactions", "reminders", "channels", "mcp"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/bash-slack-gate.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_atlas-slack",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/mcp-slack-gate.py"
+          }
+        ]
+      }
+    ]
+  }
+}

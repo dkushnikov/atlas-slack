@@ -1,0 +1,15 @@
+{
+  "_note": "Tokens go in ~/.zshenv (shell env), NOT here. settings.json env does NOT feed MCP servers. PreToolUse hooks (bash-slack-gate + mcp-slack-gate) ship inside the plugin at plugins/atlas-slack/hooks/ — no user configuration required.",
+  "_zshenv_example": "export SLACK_USER_TOKEN=xoxp-... ; export SLACK_BOT_TOKEN=xoxb-...",
+  "extraKnownMarketplaces": {
+    "atlas-slack": {
+      "source": {
+        "source": "directory",
+        "path": "<repo>"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "atlas-slack@atlas-slack": true
+  }
+}

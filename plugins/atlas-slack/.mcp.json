@@ -1,0 +1,11 @@
+{
+  "atlas-slack": {
+    "command": "python3",
+    "args": ["-m", "atlas_slack", "--transport", "stdio"],
+    "cwd": "${CLAUDE_PLUGIN_ROOT}/../../",
+    "env": {
+      "SLACK_USER_TOKEN": "${SLACK_USER_TOKEN}",
+      "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
+    }
+  }
+}

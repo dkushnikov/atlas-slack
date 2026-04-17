@@ -1,0 +1,20 @@
+[project]
+name = "atlas-slack"
+version = "0.1.0"
+description = "Full Slack Web API access via MCP — gateway + convenience tools for Claude Code"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "slack_sdk>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+atlas-slack = "atlas_slack.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,18 @@
+{
+  "name": "atlas-slack",
+  "metadata": {
+    "description": "Full Slack Web API access for Atlas — gateway + convenience tools"
+  },
+  "owner": {
+    "name": "Dmitry Kushnikov",
+    "email": "dkushnikov@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "atlas-slack",
+      "description": "Full Slack Web API access - gateway for all 200+ methods plus convenience tools for reactions, status, reminders, pins, channels, and more.",
+      "source": "./plugins/atlas-slack",
+      "category": "productivity"
+    }
+  ]
+}
