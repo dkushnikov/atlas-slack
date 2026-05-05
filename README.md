@@ -35,3 +35,8 @@ Add to Claude Code `settings.json` `extraKnownMarketplaces`:
 ```
 
 Then enable `atlas-slack@atlas-slack` in `enabledPlugins`.
+
+## Documentation
+
+- **`docs/output-contract.md`** — output format contract: per-shape field preservation, truncation rules, list caps, error hint catalogue. Source of truth for what `slack_api` returns. Code changes that alter output go via spec change first.
+- **`KNOWN_ISSUES.md`** — historical record of bugs and their resolutions, useful for understanding why current invariants exist.
