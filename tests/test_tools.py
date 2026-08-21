@@ -1,5 +1,7 @@
 """Tests for convenience wrapper tools."""
 
+from unittest.mock import MagicMock, patch
+
 from atlas_slack.tools import (
     slack_react,
     slack_set_status,
@@ -14,6 +16,7 @@ from atlas_slack.tools import (
     slack_usergroup,
     slack_bookmark,
     slack_dnd,
+    slack_download,
 )
 
 
@@ -176,3 +179,116 @@ def test_dnd_off_uses_user_client(mock_webclient):
     mock_webclient.dnd_endSnooze.return_value = {"ok": True}
     slack_dnd()
     mock_webclient._tools_get_client.assert_called_with(as_bot=False)
+
+
+# --- slack_download: files.info + authenticated HTTP GET, no live calls ---
+
+
+def _http_response(status_code=200, content=b"", content_type="application/octet-stream"):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.content = content
+    resp.headers = {"content-type": content_type}
+    return resp
+
+
+def _file_info(fid="F123", name="report.pdf", mimetype="application/pdf", **extra):
+    file = {
+        "id": fid,
+        "name": name,
+        "mimetype": mimetype,
+        "url_private_download": f"https://files.slack.com/files-pri/T1-{fid}/download/{name}",
+    }
+    file.update(extra)
+    return {"ok": True, "file": file}
+
+
+def test_download_happy_path(mock_webclient, tmp_path):
+    mock_webclient.token = "xoxp-test-user"
+    mock_webclient.files_info.return_value = _file_info()
+    pdf_bytes = b"%PDF-1.4 fake"
+    with patch("atlas_slack.tools.httpx.get", return_value=_http_response(content=pdf_bytes, content_type="application/pdf")) as get:
+        result = slack_download("F123", out_dir=str(tmp_path))
+
+    mock_webclient._tools_get_client.assert_called_with(as_bot=False)
+    mock_webclient.files_info.assert_called_once_with(file="F123")
+    kwargs = get.call_args.kwargs
+    assert get.call_args.args[0] == "https://files.slack.com/files-pri/T1-F123/download/report.pdf"
+    assert kwargs["headers"]["Authorization"] == "Bearer xoxp-test-user"
+    assert kwargs["follow_redirects"] is True
+
+    saved = tmp_path / "F123--report.pdf"
+    assert saved.read_bytes() == pdf_bytes
+    assert str(saved) in result
+    assert "application/pdf" in result
+    assert "13B" in result
+
+
+def test_download_html_login_page_detected(mock_webclient, tmp_path):
+    """Slack serves an HTML login page when the token can't access the file — must not save it."""
+    mock_webclient.files_info.return_value = _file_info()
+    login_page = _http_response(content=b"<html>Sign in to Slack</html>", content_type="text/html; charset=utf-8")
+    with patch("atlas_slack.tools.httpx.get", return_value=login_page):
+        result = slack_download("F123", out_dir=str(tmp_path))
+
+    assert "access_denied" in result
+    assert "token" in result
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_html_file_itself_is_allowed(mock_webclient, tmp_path):
+    """An actual .html file legitimately comes back as text/html — not a login page."""
+    mock_webclient.files_info.return_value = _file_info(name="page.html", mimetype="text/html", filetype="html")
+    with patch("atlas_slack.tools.httpx.get", return_value=_http_response(content=b"<html>doc</html>", content_type="text/html")):
+        result = slack_download("F123", out_dir=str(tmp_path))
+
+    assert "access_denied" not in result
+    assert (tmp_path / "F123--page.html").read_bytes() == b"<html>doc</html>"
+
+
+def test_download_file_not_found(mock_webclient, tmp_path):
+    mock_webclient.files_info.return_value = {"ok": False, "error": "file_not_found"}
+    with patch("atlas_slack.tools.httpx.get") as get:
+        result = slack_download("F404", out_dir=str(tmp_path))
+
+    assert "file_not_found" in result
+    get.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_http_error(mock_webclient, tmp_path):
+    mock_webclient.files_info.return_value = _file_info()
+    with patch("atlas_slack.tools.httpx.get", return_value=_http_response(status_code=403)):
+        result = slack_download("F123", out_dir=str(tmp_path))
+
+    assert "http_error" in result
+    assert "403" in result
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_url_private_fallback_and_bot_token(mock_webclient, tmp_path):
+    """No url_private_download → fall back to url_private; as_bot=True routes to bot client."""
+    mock_webclient.token = "xoxb-test-bot"
+    mock_webclient.files_info.return_value = {
+        "ok": True,
+        "file": {"id": "F9", "name": "notes.txt", "mimetype": "text/plain",
+                 "url_private": "https://files.slack.com/files-pri/T1-F9/notes.txt"},
+    }
+    with patch("atlas_slack.tools.httpx.get", return_value=_http_response(content=b"hi", content_type="text/plain")) as get:
+        result = slack_download("F9", out_dir=str(tmp_path), as_bot=True)
+
+    mock_webclient._tools_get_client.assert_called_with(as_bot=True)
+    assert get.call_args.args[0] == "https://files.slack.com/files-pri/T1-F9/notes.txt"
+    assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer xoxb-test-bot"
+    assert (tmp_path / "F9--notes.txt").read_bytes() == b"hi"
+    assert "notes.txt" in result
+
+
+def test_download_sanitizes_filename(mock_webclient, tmp_path):
+    """Path separators and shell-unsafe chars in the original name must not escape out_dir."""
+    mock_webclient.files_info.return_value = _file_info(name="../../etc/my report (v2).pdf")
+    with patch("atlas_slack.tools.httpx.get", return_value=_http_response(content=b"x", content_type="application/pdf")):
+        slack_download("F123", out_dir=str(tmp_path))
+
+    (saved,) = list(tmp_path.iterdir())
+    assert saved.name == "F123--my_report_v2_.pdf"

@@ -1,13 +1,19 @@
 ---
 title: atlas-slack — Output Contract
 status: locked
-version: 1.0
+version: 1.1
 created: 2026-04-30
 locked: 2026-04-30
+updated: 2026-08-21
 owner: Dmitry Kushnikov
 ---
 
 # atlas-slack — Output Contract
+
+## Changelog
+
+- **v1.1 (2026-08-21)** — minor, additive (issues #1/#3): §4.2b message extras — attachments (message shares, unfurls) and file stubs render in message lists and pins; `search.messages` nested `{"messages": {"matches": [...]}}` shape unwrapped (was erroring — FMT-003); §9 — streaming methods bot-only (pre-flight refusal under user token) + auto-split of >3000-char text into multiple section blocks on attribution wrap; §10 — `invalid_blocks` hint.
+- **v1.0 (2026-04-30)** — locked with the owner.
 
 What `slack_api(method, params, as_bot=...)` and convenience tools (`slack_react`, `slack_upload`, etc.) return as text. The contract LLM consumers can rely on, and the contract `formatters.py` must implement.
 
@@ -79,6 +85,24 @@ Preserved per item: `ts`, `user`, `text` (full), `thread_ts` (if reply), reactio
 - Cursor: passed through in header only when non-empty.
 
 > Search results note: Slack's `search.messages` returns highlighted/truncated `text` server-side. Formatter preserves verbatim — caller should follow up with `conversations.replies(channel, ts)` if full body needed. This is documented in §5 of SKILL.md.
+> The nested response shape `{"messages": {"total": N, "matches": [...]}}` is unwrapped to the match list before rendering (v1.1, FMT-003).
+
+### 4.2b Message extras — attachments & file stubs (v1.1)
+
+Messages carrying `attachments[]` (message shares, link unfurls, legacy bot attachments) or `files[]` render them under the text line. Applies to §4.2 message lists and §4.12 pins (which embed messages).
+
+```
+  ↳ [shared message|attachment] <<author>>? <title>? <link>?
+    <attachment text — payload class, never truncated>
+    — <footer>, <date>?
+  📎 file <id>: <name> (<filetype>, <size>)?
+```
+
+- Kind marker: `[shared message]` when `is_msg_unfurl` is set, else `[attachment]`.
+- Author = `author_name || author_subname || service_name` (label class); link = `title_link || from_url`.
+- Attachment `text` (fallback field: `fallback`) is **payload class** — full, never truncated (principle #3; a message share carries the entire quoted message here — see FMT-002).
+- File lines are **stubs**: id first — bytes come via `slack_download(file_id)`; the JSON API never serves file content.
+- Render caps per message: **5 attachments, 10 files**; overflow → `... and N more attachments|files`. Caps bound pathological bot messages, not real usage.
 
 ### 4.3 Channel info (`conversations.info`, `conversations.create`)
 
@@ -289,7 +313,10 @@ When `as_bot=False` (the owner's user token, recipient-facing):
 
 When `as_bot=True` → never inject.
 
-This is unchanged from current `gateway.py:67-79`. Spec'd here so it doesn't drift.
+v1.1 additions:
+
+- **Streaming is bot-only.** `chat.startStream` / `chat.appendStream` / `chat.stopStream` have no reliable attribution point (chunks arrive incrementally), so `as_bot=False` stream calls are refused pre-flight with `Error: user_token_stream — …` rather than ever posting unattributed. Streams post as Atlas.
+- **Auto-split on attribution wrap.** When wrapping plain `text` into blocks, text >3000 chars is split into multiple ≤3000-char `section` blocks at newline/space boundaries (concatenation reproduces the input exactly; multiple sections render seamlessly). Slack's per-section cap otherwise fails the send with `invalid_blocks`. Caller-supplied `blocks` are never rewritten — they fail fast with the `invalid_blocks` hint (§10), pre-checkable via `blocks.validate`.
 
 ## 10. Error policy
 
@@ -311,6 +338,7 @@ ERROR_HINTS = {
     "missing_scope":     "Token lacks the scope; check auth.test for granted scopes.",
     "cannot_dm_bot":     "Target is a bot account — DMs not supported.",
     "is_archived":       "Channel is archived; unarchive first or pick another.",
+    "invalid_blocks":    "Per-block limits exceeded — section text caps at 3000 chars; split into multiple sections or pre-check with blocks.validate.",  # v1.1
 }
 ```
 

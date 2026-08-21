@@ -5,14 +5,22 @@ Token routing policy:
   archive, usergroup, bookmark) → bot token. Atlas is the actor.
 - User-state (set_status, dnd, remind) → user token. Slack API requires user
   token for self-profile mutations.
+- Download (slack_download) → token per as_bot flag; default user token
+  (the owner's file visibility is the superset).
 
 For user-as-author posts (chat.postMessage from the owner with attribution),
 use the `slack_api` gateway directly with as_bot=False.
 """
 
+import os
+import re
+from pathlib import Path
+
+import httpx
+
 from atlas_slack.gateway import mcp
 from atlas_slack.client import get_client
-from atlas_slack.formatters import format_response, format_error
+from atlas_slack.formatters import format_response, format_error, _human_size
 
 
 def _call(fn, method_name: str, **kwargs) -> str:
@@ -28,6 +36,13 @@ def _call_raw(fn, **kwargs) -> dict:
     """Call a slack_sdk method and return the raw response dict. Raises on exception."""
     resp = fn(**kwargs)
     return resp if isinstance(resp, dict) else (resp.data if hasattr(resp, "data") else {"ok": True})
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitize an original filename for local saving: basename only, unsafe chars → '_'."""
+    base = os.path.basename(name.replace("\\", "/"))
+    safe = re.sub(r"[^\w.\-]+", "_", base).strip("._")
+    return safe or "file"
 
 
 @mcp.tool()
@@ -252,3 +267,66 @@ def slack_dnd(minutes: int = 0) -> str:
     if minutes:
         return _call(client.dnd_setSnooze, "dnd.setSnooze", num_minutes=minutes)
     return _call(client.dnd_endSnooze, "dnd.endSnooze")
+
+
+@mcp.tool()
+def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False) -> str:
+    """Download a Slack file to local disk.
+
+    Fetches metadata via files.info, then GETs url_private_download (fallback:
+    url_private) with the same token. Saves as "{file_id}--{original name}"
+    (sanitized). The Slack Web API does not serve file bytes via JSON methods —
+    this is the only supported download path; never fall back to raw curl.
+
+    Args:
+        file_id: Slack file ID (e.g. 'F0123ABCDEF') — from files.list, files.info,
+                 or a message's files attachment.
+        out_dir: Directory to save into. Default: ~/Downloads/slack (created if missing).
+        as_bot: If True, download with the bot token (file must be visible to Atlas).
+                If False (default), use the owner's user token (broadest file visibility).
+    """
+    try:
+        client = get_client(as_bot=as_bot)
+        info = _call_raw(client.files_info, file=file_id)
+        if not info.get("ok", True):
+            return format_response("files.info", info)
+        f = info.get("file") or {}
+        url = f.get("url_private_download") or f.get("url_private")
+        if not url:
+            return format_error(
+                "no_download_url",
+                f"files.info for {file_id} returned no url_private_download/url_private",
+            )
+
+        resp = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {client.token}"},
+            follow_redirects=True,
+            timeout=120.0,
+        )
+        if resp.status_code != 200:
+            return format_error("http_error", f"HTTP {resp.status_code} downloading file {file_id}")
+
+        content_type = (resp.headers.get("content-type") or "").lower()
+        file_is_html = (f.get("mimetype") or "").lower().startswith("text/html") or f.get("filetype") in ("html", "htm")
+        if content_type.startswith("text/html") and not file_is_html:
+            return format_error(
+                "access_denied",
+                f"got HTML (Slack login page) instead of file bytes for {file_id} — "
+                f"the {'bot' if as_bot else 'user'} token can't access this file; try as_bot={not as_bot}",
+            )
+
+        target_dir = Path(out_dir).expanduser() if out_dir else Path.home() / "Downloads" / "slack"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        name = f.get("name") or file_id
+        path = target_dir / f"{file_id}--{_safe_filename(name)}"
+        path.write_bytes(resp.content)
+
+        mimetype = f.get("mimetype") or content_type or "?"
+        return "\n".join([
+            f"Downloaded: {name} (ID: {file_id})",
+            f"  path: {path}",
+            f"  type: {mimetype}, size: {_human_size(len(resp.content))}",
+        ])
+    except Exception as e:
+        return format_error("exception", str(e))

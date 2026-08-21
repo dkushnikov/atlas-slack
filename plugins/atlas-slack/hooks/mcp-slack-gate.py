@@ -26,7 +26,23 @@ import sys
 
 READ_SUFFIXES = (".list", ".info", ".history", ".get", ".read", ".members", ".replies", ".test")
 READ_PREFIXES = ("search.", "auth.", "emoji.", "team.")
-READ_EXACT = {"dnd.info", "dnd.teamInfo", "reminders.list", "reminders.info"}
+READ_EXACT = {"dnd.info", "dnd.teamInfo", "reminders.list", "reminders.info",
+              "blocks.validate"}  # validator — no workspace mutation
+
+# Writes that are auto-allowed by conscious classification (issue #1):
+# - chat.appendStream / chat.stopStream only continue a stream that chat.startStream
+#   already opened — and startStream is gated as a send ("ask"). Asking on every
+#   appended chunk would make streaming unusable without adding any control: the
+#   send decision was the start.
+# - agents.sessions.setStatus / rename mutate only agent-session chrome (status
+#   line, session title) — no recipient-facing content. Other agents.sessions.*
+#   methods (future additions) fall through to "ask" by default.
+ALLOWED_WRITES = {
+    "chat.appendStream",
+    "chat.stopStream",
+    "agents.sessions.setStatus",
+    "agents.sessions.rename",
+}
 
 
 def emit(decision: str, reason: str = "") -> None:
@@ -65,10 +81,16 @@ def main() -> None:
 
     if short == "slack_api":
         method = tool_input.get("method", "")
-        if is_read(method):
+        if is_read(method) or method in ALLOWED_WRITES:
             emit("allow")
             return
         emit("ask", f"Slack write: {method}")
+        return
+
+    # slack_download is Slack-read-only (files.info + authenticated GET); its
+    # only local effect is writing the file into out_dir.
+    if short == "slack_download":
+        emit("allow")
         return
 
     # Convenience tools (slack_react, slack_pin, slack_upload, slack_edit,

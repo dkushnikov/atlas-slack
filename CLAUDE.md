@@ -1,12 +1,12 @@
 # atlas-slack — Atlas Plugin
 
-Full Slack Web API access via MCP. Gateway for all 200+ methods + 13 convenience tools.
+Full Slack Web API access via MCP. Gateway for all 200+ methods + 14 convenience tools.
 
 ## Quick Reference
 
 - **Type:** Plugin (MCP server + skills)
 - **Marketplace:** atlas-slack
-- **MCP tools:** 14 (1 gateway + 13 convenience wrappers)
+- **MCP tools:** 15 (1 gateway + 14 convenience wrappers)
 - **Stack:** Python 3.12+, FastMCP, slack_sdk
 - **Transport:** stdio
 
@@ -30,8 +30,9 @@ cd <repo> && python3 -m pytest tests/
 # Validate plugin
 claude plugin validate <repo>
 
-# Reinstall after changes
-claude plugin install atlas-slack@atlas-slack
+# Redeploy after editing source (install no-ops if already installed):
+claude plugin marketplace update atlas-slack   # re-scan directory source
+claude plugin update atlas-slack@atlas-slack   # then restart session to apply
 ```
 
 ## Plugin Process
@@ -82,7 +83,9 @@ Ship atomically with the plugin — no user settings.json configuration required
 - Plugin: registered and installed
 - Hooks: `mcp-slack-gate.py` (MCP write gate) + `bash-slack-gate.py` (curl bypass blocker) — both inside plugin
 - Bot scopes: 48, User scopes: 29
-- Tests: 55 passing
+- Tests: 160 passing (+6 e2e, gated by SLACK_E2E=1)
+- Streams (`chat.*Stream`): bot-only policy; gate allows append/stop, asks on start (2026-08-21)
+- History output renders attachments (message shares) + file stubs — contract v1.1 (2026-08-21)
 
 ## What's Next
 

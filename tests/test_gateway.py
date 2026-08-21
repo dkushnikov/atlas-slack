@@ -203,3 +203,137 @@ def test_slack_api_files_complete_upload_bot_mode_no_suffix(mock_webclient):
 
     call_params = mock_webclient.api_call.call_args.kwargs["params"]
     assert call_params["initial_comment"] == "from Atlas"
+
+
+# === Contract smoke — output-contract.md end-to-end via gateway ===
+
+def test_smoke_message_list_full_text_via_gateway(mock_webclient):
+    """The original bug: 80-char truncation. Verifies fix flows through gateway."""
+    long = "x" * 1500
+    mock_webclient.api_call.return_value = {
+        "ok": True,
+        "messages": [{"ts": "1.0", "user": "U1", "text": long}],
+    }
+    result = slack_api("conversations.replies", {"channel": "C1", "ts": "1.0"})
+    assert long in result
+
+
+def test_smoke_cursor_passes_through_gateway(mock_webclient):
+    """response_metadata.next_cursor must reach output, not get stripped silently."""
+    mock_webclient.api_call.return_value = {
+        "ok": True,
+        "messages": [{"ts": "1.0", "user": "U1", "text": "hi"}],
+        "response_metadata": {"next_cursor": "abc"},
+    }
+    result = slack_api("conversations.history", {"channel": "C1"})
+    assert "next_cursor=abc" in result
+
+
+def test_smoke_warning_prefixed_via_gateway(mock_webclient):
+    mock_webclient.api_call.return_value = {
+        "ok": True,
+        "warning": "deprecated_field",
+        "channel": {"id": "C1", "name": "x"},
+    }
+    result = slack_api("conversations.info", {"channel": "C1"})
+    assert result.startswith("⚠️ deprecated_field")
+
+
+def test_smoke_error_hint_via_gateway(mock_webclient):
+    """ERROR_HINTS catalogue must trigger when gateway returns ok=false."""
+    mock_webclient.api_call.return_value = {"ok": False, "error": "channel_not_found"}
+    result = slack_api("conversations.history", {"channel": "C_BAD"})
+    assert "channel_not_found" in result
+    assert "DM channel IDs are per-viewer" in result
+
+
+def test_smoke_file_upload_permalink_returned(mock_webclient):
+    """files.uploadV2 result must surface permalink — not lost in old name-only render."""
+    mock_webclient.api_call.return_value = {
+        "ok": True,
+        "files": [{"id": "F1", "name": "doc.pdf",
+                   "permalink": "https://x.slack.com/F1"}],
+    }
+    result = slack_api("files.uploadV2", {"channels": "C1", "content": "x"})
+    assert "https://x.slack.com/F1" in result
+
+
+def test_smoke_channel_info_topic_purpose_returned(mock_webclient):
+    """conversations.info must surface topic/purpose/num_members — not lost in old #name (ID) only."""
+    mock_webclient.api_call.return_value = {
+        "ok": True,
+        "channel": {
+            "id": "C1", "name": "team",
+            "num_members": 42,
+            "topic": {"value": "the topic"},
+            "purpose": {"value": "the purpose"},
+        },
+    }
+    result = slack_api("conversations.info", {"channel": "C1"})
+    assert "members: 42" in result
+    assert "topic: the topic" in result
+    assert "purpose: the purpose" in result
+
+
+def test_smoke_chat_delete_returns_done_despite_payload(mock_webclient):
+    """chat.delete returns {channel, ts} — spec routes to Done ✓."""
+    mock_webclient.api_call.return_value = {"ok": True, "channel": "C1", "ts": "1.0"}
+    result = slack_api("chat.delete", {"channel": "C1", "ts": "1.0"})
+    assert result == "Done ✓"
+
+
+def test_smoke_long_thread_shows_count_marker(mock_webclient):
+    """List cap of 200 messages — overflow shows '... and N more'."""
+    msgs = [{"ts": f"{i}.0", "user": "U1", "text": f"m{i}"} for i in range(205)]
+    mock_webclient.api_call.return_value = {"ok": True, "messages": msgs}
+    result = slack_api("conversations.replies", {"channel": "C1", "ts": "1.0"})
+    assert "... and 5 more" in result
+
+
+# === Issue #1 — stream policy & attribution auto-split ===
+
+def test_stream_methods_user_mode_refused(mock_webclient):
+    """User-token streams would post recipient-facing text with no attribution point."""
+    for method in ("chat.startStream", "chat.appendStream", "chat.stopStream"):
+        result = slack_api(method, {"channel": "C1"})
+        assert "user_token_stream" in result
+    mock_webclient.api_call.assert_not_called()
+
+
+def test_stream_methods_bot_mode_pass_through(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
+    slack_api("chat.appendStream", {"channel": "C1", "ts": "1.2", "markdown_text": "chunk"}, as_bot=True)
+    call_params = mock_webclient.api_call.call_args.kwargs["params"]
+    assert "blocks" not in call_params
+    assert call_params["markdown_text"] == "chunk"
+
+
+def test_long_text_auto_split_into_sections(mock_webclient):
+    """Attribution wrapping must not turn a >3000-char post into invalid_blocks."""
+    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
+    text = "\n".join(f"line {i} " + "x" * 90 for i in range(70))
+    slack_api("chat.postMessage", {"channel": "C1", "text": text})
+    blocks = mock_webclient.api_call.call_args.kwargs["params"]["blocks"]
+    sections = [b for b in blocks if b["type"] == "section"]
+    assert len(sections) >= 3
+    assert all(len(b["text"]["text"]) <= 3000 for b in sections)
+    assert blocks[-1]["type"] == "context"
+    assert "".join(b["text"]["text"] for b in sections) == text
+
+
+def test_short_text_stays_single_section(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
+    slack_api("chat.postMessage", {"channel": "C1", "text": "short"})
+    blocks = mock_webclient.api_call.call_args.kwargs["params"]["blocks"]
+    assert [b["type"] for b in blocks] == ["section", "context"]
+    assert blocks[0]["text"]["text"] == "short"
+
+
+def test_unbroken_text_hard_split(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
+    text = "x" * 6500
+    slack_api("chat.postMessage", {"channel": "C1", "text": text})
+    sections = [b for b in mock_webclient.api_call.call_args.kwargs["params"]["blocks"]
+                if b["type"] == "section"]
+    assert all(len(b["text"]["text"]) <= 3000 for b in sections)
+    assert "".join(b["text"]["text"] for b in sections) == text

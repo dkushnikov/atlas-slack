@@ -8,7 +8,17 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def mock_env():
-    """Ensure both Slack tokens are set for all tests."""
+    """Ensure both Slack tokens are set for unit/smoke tests.
+
+    When SLACK_E2E=1 is set, the fixture passes through — real tokens from the
+    environment are used, allowing live Slack API calls in test_e2e.py.
+    """
+    if os.environ.get("SLACK_E2E") == "1":
+        from atlas_slack import client as mod
+        mod._clients.clear()
+        yield
+        mod._clients.clear()
+        return
     with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxp-test-user", "SLACK_BOT_TOKEN": "xoxb-test-bot"}):
         from atlas_slack import client as mod
         mod._clients.clear()

@@ -1,6 +1,6 @@
 ---
 name: atlas-slack
-description: Use for ANY Slack operation — reads, writes, and preparation steps (find user, lookup by email, open DM, DM someone, get channel ID, list members, check presence / is-online, search messages, read thread). Also post, reply, ping, react, pin, edit, upload, schedule, set status/DND/reminder, manage channels. Covers all 200+ Slack Web API methods through `slack_api` plus 13 typed tools. Invoke instead of raw `curl slack.com/api/...` or grabbing a Slack token from keychain (`security find-generic-password`) — token routing, attribution, dispatch all handled. Triggers on any mention of Slack, a channel/DM/thread, or a colleague to message — including `get X's channel ID` or `find Y's Slack user` that precede a send.
+description: Use for ANY Slack operation — reads, writes, and preparation steps (find user, lookup by email, open DM, DM someone, get channel ID, list members, check presence / is-online, search messages, read thread). Also post, reply, ping, react, pin, edit, upload, download a shared file, schedule, set status/DND/reminder, manage channels. Covers all 200+ Slack Web API methods through `slack_api` plus 14 typed tools. Invoke instead of raw `curl slack.com/api/...` or grabbing a Slack token from keychain (`security find-generic-password`) — token routing, attribution, dispatch all handled. Triggers on any mention of Slack, a channel/DM/thread, or a colleague to message — including `get X's channel ID` or `find Y's Slack user` that precede a send.
 ---
 
 # atlas-slack — Slack API for Atlas
@@ -26,6 +26,7 @@ Pick the row that matches your intent. The right column is what to call.
 | React / pin / unpin | `slack_react(...)` · `slack_pin(...)` |
 | Edit or delete one of your messages | `slack_edit(...)` · `slack_delete(...)` |
 | Upload a file to a channel | `slack_upload(...)` or 3-step `files.*` flow (below) |
+| Download a Slack file to local disk | `slack_download(file_id)` — the JSON API never serves file bytes |
 | Set the owner's status / DND / reminder | `slack_set_status(...)` · `slack_dnd(...)` · `slack_remind(...)` |
 | Create / invite / archive channel | `slack_create_channel(...)` · `slack_invite(...)` · `slack_archive(...)` |
 | Anything else in the Slack Web API | `slack_api(method, params, as_bot=?)` — all 200+ methods work |
@@ -38,6 +39,7 @@ If you're reaching for `curl https://slack.com/api/...` or `security find-generi
 |---|---|
 | `curl -H "Authorization: Bearer $TOKEN" slack.com/api/conversations.open -d "users=U..."` | `slack_api("conversations.open", {"users": "U..."})` |
 | `curl ... slack.com/api/users.lookupByEmail?email=...` | `slack_api("users.lookupByEmail", {"email": "..."})` |
+| `curl -H "Authorization: Bearer $TOKEN" files.slack.com/files-pri/... -o file` | `slack_download(file_id)` — auth, login-page detection, safe filename handled |
 | `security find-generic-password -s slack-user-token -w` | Unnecessary — `slack_api` resolves tokens via env, set once in `~/.zshenv` |
 
 **The only legitimate raw HTTP call** is the binary PUT to the `upload_url` returned by `files.getUploadURLExternal` (step 2 of a modern file upload). That is a file transfer, not a Web API call — see the file upload section below.
@@ -71,8 +73,9 @@ When `as_bot=False`, `slack_api` auto-applies `:blue_heart: @Atlas` attribution 
 
 | Method | Attribution shape |
 |---|---|
-| `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` | Block Kit context block appended |
+| `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` | Block Kit context block appended; long `text` auto-split into ≤3000-char sections |
 | `files.completeUploadExternal` with `initial_comment` | Text suffix on `initial_comment` |
+| `chat.startStream` / `chat.appendStream` / `chat.stopStream` | **Refused under user token** — streaming is bot-only, always pass `as_bot=True` |
 | Reactions, pins, reads, user-state changes (`users.profile.set`, `dnd.*`) | No injection — no recipient-facing text |
 
 Bot-token calls (`as_bot=True`) never get attribution — Atlas is already the author on record.
@@ -115,13 +118,14 @@ Combine freely: `"deploy" in:incidents from:@owner after:2026-04-01 -resolved`.
 
 ## Convenience tool signatures
 
-The Quick start table above shows which tool covers which task. These are the full parameter lists for the 13 typed wrappers:
+The Quick start table above shows which tool covers which task. These are the full parameter lists for the 14 typed wrappers:
 
 - `slack_react(channel, timestamp, emoji, remove?)` — add/remove emoji reaction
 - `slack_set_status(text, emoji?, expiration?)` — set the owner's status
 - `slack_remind(text, time, user?)` — create reminder
 - `slack_pin(channel, timestamp, unpin?)` — pin/unpin message
 - `slack_upload(channels, content, title?, filetype?)` — upload file
+- `slack_download(file_id, out_dir?, as_bot?)` — download a Slack file to local disk (default `~/Downloads/slack`); files.info → authenticated GET of `url_private_download`, HTML-login-page detection built in
 - `slack_edit(channel, timestamp, text)` — edit message
 - `slack_delete(channel, timestamp)` — delete message (destructive)
 - `slack_create_channel(name, private?, description?)` — create channel
@@ -151,6 +155,10 @@ No headers (`##`), no horizontal rules (`---`), no `[text](url)` links.
 
 ## Message Output Format
 
-`conversations.history` returns: `[timestamp] <user_id> message text`
+`conversations.history` returns: `[timestamp] <user_id>` + message text, then any extras the message carries:
+
+- `↳ [shared message] <author> <permalink>` + quoted text — a forwarded Slack message (full body, nothing truncated)
+- `↳ [attachment] ...` — link unfurls / legacy bot attachments
+- `📎 file F0XXXX: name (type, size)` — file stub; fetch the bytes with `slack_download(file_id)`
 
 Use the timestamp directly for `slack_react`, `slack_pin`, `slack_edit`, `slack_delete`.
