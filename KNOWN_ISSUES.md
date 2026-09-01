@@ -165,3 +165,93 @@ Real `search.messages` responses nest the list: `{"messages": {"total": N, "matc
 ### Resolution
 
 Handler unwraps `messages.matches` when `messages` is a dict (contract v1.1 §4.2 note). Search results now render, including attachments per §4.2b. Note: Slack still server-truncates `text` in search results — follow up with `conversations.replies` for full bodies (unchanged §4.2 guidance).
+
+---
+
+## ERR-001 — Slack failures structurally indistinguishable from success
+
+**Severity:** High · **Status:** Resolved · **Reported:** 2026-09-01 (audit) · **Fixed:** 2026-09-01 (v1.2)
+
+### Symptom
+
+Every Slack failure (`ok:false`, `SlackApiError`, network exceptions) returned as *success content* — a plain string starting with `Error:`. At the MCP level `is_error` was never set: a naive error detector saw a 0% failure rate, and 11/1045 calls in the 86-day audit were structurally invisible failures. Same class as FMT-001/FMT-003: a tool artifact arriving as a plausible fact about Slack.
+
+Compounding bug: slack_sdk's `WebClient` **raises** `SlackApiError` on `ok:false`, so the `format_response` ok-false branch (and with it the §10 `ERROR_HINTS` catalogue) was bypassed on live calls — errors surfaced as `Error: exception — ...The server responded with: {'ok': False, 'error': 'channel_not_found'}` with no hint.
+
+### Resolution (v1.2)
+
+Gateway raises `ToolError` on all failure paths → FastMCP sets `is_error=true`; the Slack error code is extracted from `SlackApiError` so `Error: <code> — <hint>` fires again. `slack_download` converted likewise. Live-verified same day: a bot-token call against a user-side DM ID returned a structural error whose hint ("DM channel IDs are per-viewer...") correctly diagnosed the failure. Contract v1.2 §10; tests in `test_gateway.py` / `test_tools.py`.
+
+---
+
+## FMT-004 — Unread state stripped from conversations.info (unread-blindness)
+
+**Severity:** Medium · **Status:** Resolved · **Reported:** 2026-09-01 · **Fixed:** 2026-09-01 (v1.2)
+
+### Symptom
+
+`_h_channel_info`'s §4.3 whitelist dropped `last_read` / `unread_count` / `unread_count_display` — "what's unread in my DM with X?" was unanswerable through the tool (incident 2026-09-01). DMs also rendered as `Channel: #? (ID: D...)`.
+
+### Resolution (v1.2)
+
+§4.3 renders `last_read:` and `unread: N (M display)` when present (`unread: 0` shown — "all read" is information); DMs render `Channel: DM with <user>`. Unit tests in `TestChannelInfo`.
+
+---
+
+## FMT-005 — Unbounded conversations.history/replies responses
+
+**Severity:** Medium · **Status:** Resolved · **Reported:** 2026-08 (3 incidents) · **Fixed:** 2026-09-01 (v1.2)
+
+### Symptom
+
+Calls without `limit` let Slack serve up to 1000 messages — three oversized responses (78–98K chars) hit sessions on 08-04/13/15. The §7 render cap (200) bounded *rendering*, not payload fetched and formatted.
+
+### Resolution (v1.2)
+
+Gateway injects `limit=100` when the caller passes none; explicit `limit` always wins. Contract v1.2 §8.
+
+---
+
+## FMT-006 — Parallel list responses not attributable to their calls
+
+**Severity:** Medium · **Status:** Resolved · **Reported:** 2026-04-28 · **Fixed:** 2026-09-01 (v1.2)
+
+### Symptom
+
+List bodies don't self-identify (`12 members:` — of which channel?). Two parallel `conversations.members` calls were attributable only by response order — the 04-28 mixed-up-responses incident.
+
+### Resolution (v1.2)
+
+List shapes lead with an args-echo line `» <method> channel=C123 ...` echoing the caller's original request args. Contract v1.2 §8; `TestArgsEcho`.
+
+---
+
+## UPL-001 — slack_upload truncated DM channel IDs (channels → "D")
+
+**Severity:** Medium · **Status:** Closed (tool removed; root cause identified) · **Reported:** 2026-04-10 · **Closed:** 2026-09-01 (v1.2)
+
+### Symptom
+
+`slack_upload(channels="D06MG7QF3ME", ...)` failed with `invalid_channel` — Slack received `channel=D` (observed 2026-04-10, Pearch artifacts to a DM).
+
+### Root cause
+
+`tools.py` passed `channels` as a comma-separated **string**; slack_sdk `files_upload_v2` types it `List[str]` and serializes with `",".join(channels)` — joining a plain string character-by-character (`"D06MG7QF3ME"` → `"D,0,6,M,..."`; Slack reads element one, `D`). Re-verified live 2026-09-01 (v1.1 call shape vs DM D2SH1V09K → `channel_not_found`): the bug did **not** die in v1.1.
+
+### Resolution (v1.2)
+
+`slack_upload` removed with the convenience-wrapper cut (fix #7). The documented 3-step flow (`files.getUploadURLExternal` → binary PUT → `files.completeUploadExternal` with string `channel_id`) is immune, live-verified into DM D2SH1V09K same day (file `F0BU04ZPE3D`, shared with attribution suffix). Gotcha recorded in the skill: DM IDs are per-viewer — bot-token uploads need the bot-side DM ID via `conversations.open`. MC memory `feedback_slack_upload_dm_bug` updated/closed.
+
+---
+
+## GATE-001 — conversations.open confirmed as if a read-like lookup
+
+**Severity:** Low · **Status:** Resolved · **Reported:** 2026-08-28 · **Fixed:** 2026-09-01 (v1.2)
+
+### Symptom
+
+The gate's ask-text for `conversations.open` was the generic `Slack write: conversations.open`, hiding that the call **creates** a DM/MPIM — an accidental empty multi-party DM was created during a "lookup" (08-28; cleaned up 09-01).
+
+### Resolution (v1.2)
+
+`mcp-slack-gate.py` emits an explanatory reason: creates/opens DM vs group DM (MPIM member list included), and points at `users.conversations` as the read-side lookup — which is now correctly classified as a read (it previously fell through to "ask" because `.conversations` matched no read suffix). Tests in `TestConversationsOpenHint`.

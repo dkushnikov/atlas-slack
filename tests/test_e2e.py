@@ -124,11 +124,15 @@ def test_conversations_info_surfaces_metadata(channel):
 # === Contract: error returns hint when in catalogue ===
 
 def test_unknown_channel_triggers_hint():
-    """Calling against a fake channel ID must surface the channel_not_found hint."""
-    result = slack_api("conversations.info", {"channel": "C00DEADBEEF"})
-    assert "channel_not_found" in result
+    """Calling against a fake channel ID must fail structurally (ToolError →
+    is_error=true) and surface the channel_not_found hint (v1.2 fix #1)."""
+    from fastmcp.exceptions import ToolError
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("conversations.info", {"channel": "C00DEADBEEF"})
+    msg = str(exc_info.value)
+    assert "channel_not_found" in msg
     # Hint catalogue text — defensive check, just verify hint present in some form
-    assert "—" in result, "hint catalogue should append explanation after error code"
+    assert "—" in msg, "hint catalogue should append explanation after error code"
 
 
 # === Contract: chat.delete returns Done ✓ ===

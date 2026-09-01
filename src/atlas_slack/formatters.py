@@ -46,7 +46,7 @@ def format_error(error_code: str, detail: str = "") -> str:
     return msg
 
 
-def format_response(method: str, resp: dict) -> str:
+def format_response(method: str, resp: dict, req_params: dict | None = None) -> str:
     """Dispatch a Slack API response to its shape handler per output-contract.md.
 
     Order of operations:
@@ -54,7 +54,8 @@ def format_response(method: str, resp: dict) -> str:
       2. Extract warnings + cursor from response_metadata before stripping.
       3. If method is empty-success or cleaned dict is empty → 'Done ✓'.
       4. Otherwise dispatch by method, falling back to shape inference, then JSON.
-      5. Prepend warning line if any.
+      5. For list shapes, prepend the args-echo line (v1.2 §8) when req_params given.
+      6. Prepend warning line if any.
     """
     if not resp.get("ok", True):
         return format_error(resp.get("error", "unknown_error"))
@@ -71,10 +72,28 @@ def format_response(method: str, resp: dict) -> str:
     else:
         handler = _DISPATCH.get(method) or _infer_handler(cleaned)
         body = handler(method, cleaned, cursor)
+        echo = _args_echo(method, handler, req_params)
+        if echo:
+            body = f"{echo}\n{body}"
 
     if warnings:
         return f"⚠️ {warnings}\n{body}"
     return body
+
+
+def _args_echo(method: str, handler: "Callable", req_params: dict | None) -> str:
+    """Args-echo line for list shapes (v1.2 §8).
+
+    List bodies don't self-identify ('12 members:' — of which channel?), so
+    parallel responses were attributable only by call order — the confusion
+    class of 04-28. First line echoes the method + disambiguating request args.
+    """
+    if not req_params or handler not in _LIST_HANDLERS:
+        return ""
+    parts = [f"{k}={req_params[k]}" for k in ECHO_KEYS if req_params.get(k)]
+    if not parts:
+        return f"» {method}"
+    return f"» {method} {' '.join(parts)}"
 
 
 def _extract_warnings(resp: dict) -> str:
@@ -294,7 +313,6 @@ def _h_channel_info(method: str, c: dict, cursor: str) -> str:
     if not isinstance(ch, dict):
         return _h_unknown(method, c, cursor)
 
-    name = _label(ch.get("name", "?"))
     cid = ch.get("id", "?")
     flags = []
     if ch.get("is_private"):
@@ -305,7 +323,14 @@ def _h_channel_info(method: str, c: dict, cursor: str) -> str:
         flags.append("general")
     flag_str = (" " + " ".join(flags)) if flags else ""
 
-    lines = [f"Channel: #{name} (ID: {cid}){flag_str}"]
+    # DMs carry no name — render the counterpart user instead of '#?' (v1.2)
+    if ch.get("is_im") and ch.get("user"):
+        head = f"Channel: DM with {ch['user']} (ID: {cid}){flag_str}"
+    else:
+        name = _label(ch.get("name", "?"))
+        head = f"Channel: #{name} (ID: {cid}){flag_str}"
+
+    lines = [head]
     if ch.get("num_members") is not None:
         lines.append(f"  members: {ch['num_members']}")
     topic = (ch.get("topic") or {}).get("value")
@@ -314,6 +339,16 @@ def _h_channel_info(method: str, c: dict, cursor: str) -> str:
     purpose = (ch.get("purpose") or {}).get("value")
     if purpose:
         lines.append(f"  purpose: {purpose}")
+    # Unread state (v1.2) — previously whitelisted away; the blindness made
+    # "what's unread?" unanswerable through the tool (incident 2026-09-01)
+    if ch.get("last_read"):
+        lines.append(f"  last_read: {ch['last_read']}")
+    if ch.get("unread_count") is not None:
+        unread = f"  unread: {ch['unread_count']}"
+        ucd = ch.get("unread_count_display")
+        if ucd is not None and ucd != ch.get("unread_count"):
+            unread += f" ({ucd} display)"
+        lines.append(unread)
     if ch.get("created"):
         lines.append(f"  created: {_ts_to_date(ch['created'])}")
     return "\n".join(lines)
@@ -708,6 +743,21 @@ _DISPATCH: dict[str, Callable[[str, dict, str], str]] = {
     "auth.test": _h_auth,
     "team.info": _h_auth,
 }
+
+# Handlers whose output is a list shape — these get the args-echo line (v1.2 §8);
+# single-entity shapes self-identify (channel ID, user ID in the body) and don't.
+_LIST_HANDLERS = {
+    _h_message_list,
+    _h_channel_list,
+    _h_user_list,
+    _h_file_list,
+    _h_pin_list,
+    _h_reminder_list,
+    _h_usergroup_list,
+}
+
+# Request keys worth echoing — the ones that disambiguate parallel calls.
+ECHO_KEYS = ("channel", "ts", "user", "users", "query", "email", "types")
 
 # §4.15 — methods that return empty success (Done ✓) regardless of payload
 _EMPTY_SUCCESS_METHODS: frozenset[str] = frozenset({

@@ -27,7 +27,9 @@ import sys
 READ_SUFFIXES = (".list", ".info", ".history", ".get", ".read", ".members", ".replies", ".test")
 READ_PREFIXES = ("search.", "auth.", "emoji.", "team.")
 READ_EXACT = {"dnd.info", "dnd.teamInfo", "reminders.list", "reminders.info",
-              "blocks.validate"}  # validator — no workspace mutation
+              "blocks.validate",       # validator — no workspace mutation
+              "users.conversations"}   # read: lists conversations for a user
+
 
 # Writes that are auto-allowed by conscious classification (issue #1):
 # - chat.appendStream / chat.stopStream only continue a stream that chat.startStream
@@ -58,6 +60,29 @@ def emit(decision: str, reason: str = "") -> None:
     sys.exit(0)
 
 
+def open_reason(params: dict) -> str:
+    """Ask-text for conversations.open — it CREATES (or reopens) a DM/MPIM.
+
+    Incident 08-28: an accidental empty multi-party DM was created while
+    'looking up' a conversation. The confirmation text now says what the call
+    will actually do — including the MPIM member list — and names the read-side
+    alternative (users.conversations) for finding existing conversations.
+    """
+    if not isinstance(params, dict):
+        params = {}
+    users = [u.strip() for u in str(params.get("users") or "").split(",") if u.strip()]
+    tail = "To find existing DMs use users.conversations (read, auto-allowed)."
+    if len(users) > 1:
+        return (f"Slack write: conversations.open — creates a group DM (MPIM) "
+                f"with {len(users)} users: {', '.join(users)}. {tail}")
+    if len(users) == 1:
+        return f"Slack write: conversations.open — opens a 1:1 DM with {users[0]}. {tail}"
+    channel = params.get("channel")
+    if channel:
+        return f"Slack write: conversations.open — reopens conversation {channel}."
+    return f"Slack write: conversations.open — creates a DM/MPIM. {tail}"
+
+
 def is_read(method: str) -> bool:
     if method in READ_EXACT:
         return True
@@ -84,6 +109,9 @@ def main() -> None:
         if is_read(method) or method in ALLOWED_WRITES:
             emit("allow")
             return
+        if method == "conversations.open":
+            emit("ask", open_reason(tool_input.get("params") or {}))
+            return
         emit("ask", f"Slack write: {method}")
         return
 
@@ -93,10 +121,8 @@ def main() -> None:
         emit("allow")
         return
 
-    # Convenience tools (slack_react, slack_pin, slack_upload, slack_edit,
-    # slack_delete, slack_create_channel, slack_invite, slack_archive,
-    # slack_usergroup, slack_bookmark, slack_remind, slack_set_status, slack_dnd)
-    # — always writes.
+    # Anything else (v1.2 removed the convenience wrappers; this also catches
+    # future tools added without a gate rule) → ask. Defense in depth.
     emit("ask", f"Slack write: {short}")
 
 

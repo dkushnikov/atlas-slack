@@ -4,7 +4,7 @@ Full Slack Web API access via MCP for Claude Code.
 
 ## What
 
-One generic gateway tool (`slack_api`) for all 200+ Slack Web API methods, plus 14 convenience wrappers for common operations.
+One generic gateway tool (`slack_api`) for all 200+ Slack Web API methods, plus `slack_download` for fetching file bytes to local disk (v1.2 removed the typed convenience wrappers — unused; everything routes through `slack_api`).
 
 Complements the official Slack plugin (which handles canvas and semantic search).
 

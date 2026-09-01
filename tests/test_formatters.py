@@ -217,6 +217,89 @@ class TestChannelInfo:
         first_line = result.split("\n")[0]
         assert " general" not in first_line
 
+    # --- v1.2: unread state (was whitelisted away — unread-blindness 2026-09-01) ---
+
+    def test_unread_fields_rendered(self):
+        resp = {"ok": True, "channel": {
+            "id": "D2SH1V09K", "is_im": True, "user": "U123",
+            "last_read": "1756713600.000100",
+            "unread_count": 7, "unread_count_display": 5,
+        }}
+        result = format_response("conversations.info", resp)
+        assert "last_read: 1756713600.000100" in result
+        assert "unread: 7 (5 display)" in result
+
+    def test_unread_display_omitted_when_equal(self):
+        resp = {"ok": True, "channel": {
+            "id": "C1", "name": "x", "unread_count": 3, "unread_count_display": 3,
+        }}
+        result = format_response("conversations.info", resp)
+        assert "unread: 3" in result
+        assert "display" not in result
+
+    def test_unread_zero_still_shown(self):
+        """unread_count=0 is information (all read), not absence — must render."""
+        resp = {"ok": True, "channel": {"id": "C1", "name": "x", "unread_count": 0}}
+        result = format_response("conversations.info", resp)
+        assert "unread: 0" in result
+
+    def test_no_unread_fields_no_lines(self):
+        resp = {"ok": True, "channel": {"id": "C1", "name": "x"}}
+        result = format_response("conversations.info", resp)
+        assert "unread" not in result
+        assert "last_read" not in result
+
+    def test_im_renders_dm_with_user(self):
+        """DMs have no name — header shows the counterpart, not '#?' (v1.2)."""
+        resp = {"ok": True, "channel": {"id": "D2SH1V09K", "is_im": True, "user": "U123"}}
+        result = format_response("conversations.info", resp)
+        assert result.startswith("Channel: DM with U123 (ID: D2SH1V09K)")
+        assert "#?" not in result
+
+
+# === v1.2 §8 — args echo on list shapes ===
+
+class TestArgsEcho:
+    def test_members_echo_channel(self):
+        """The 04-28 confusion class: '12 members:' — of which channel?"""
+        resp = {"ok": True, "members": ["U1", "U2"]}
+        result = format_response("conversations.members", resp, req_params={"channel": "C123"})
+        assert result.split("\n")[0] == "» conversations.members channel=C123"
+        assert "2 members" in result
+
+    def test_history_echo_channel(self):
+        resp = {"ok": True, "messages": [{"ts": "1.0", "user": "U1", "text": "hi"}]}
+        result = format_response("conversations.history", resp, req_params={"channel": "C9", "limit": 100})
+        assert result.split("\n")[0] == "» conversations.history channel=C9"
+
+    def test_search_echo_query(self):
+        resp = {"ok": True, "messages": {"total": 0, "matches": []}}
+        result = format_response("search.messages", resp, req_params={"query": "deploy in:incidents"})
+        assert result.split("\n")[0] == "» search.messages query=deploy in:incidents"
+
+    def test_no_req_params_no_echo(self):
+        resp = {"ok": True, "members": ["U1"]}
+        result = format_response("conversations.members", resp)
+        assert not result.startswith("»")
+
+    def test_single_shape_no_echo(self):
+        """Single-entity shapes self-identify — no echo line."""
+        resp = {"ok": True, "channel": {"id": "C1", "name": "x"}}
+        result = format_response("conversations.info", resp, req_params={"channel": "C1"})
+        assert "»" not in result
+
+    def test_echo_without_disambiguating_keys_shows_method(self):
+        resp = {"ok": True, "members": [{"id": "U1", "name": "a"}]}
+        result = format_response("users.list", resp, req_params={"limit": 10})
+        assert result.split("\n")[0] == "» users.list"
+
+    def test_warning_stays_before_echo(self):
+        resp = {"ok": True, "warning": "deprecated", "members": ["U1"]}
+        result = format_response("conversations.members", resp, req_params={"channel": "C1"})
+        lines = result.split("\n")
+        assert lines[0].startswith("⚠️")
+        assert lines[1] == "» conversations.members channel=C1"
+
 
 # === §4.4 channel list ===
 

@@ -10,7 +10,7 @@ Covers:
   4. Lookup: users.info on a colleague
   5. Bot-token write: post message as Atlas to a colleague DM
   6. User-token write with attribution: post as the owner with auto-injected footer
-  7. Reaction: slack_react bot-side
+  7. Reaction: reactions.add bot-side
   8. Cleanup: delete the test messages
   9. Hook enforcement: invoke bash with curl slack.com/api/* — must be blocked
 

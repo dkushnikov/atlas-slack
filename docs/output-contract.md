@@ -1,10 +1,10 @@
 ---
 title: atlas-slack — Output Contract
 status: locked
-version: 1.1
+version: 1.2
 created: 2026-04-30
 locked: 2026-04-30
-updated: 2026-08-21
+updated: 2026-09-01
 owner: Dmitry Kushnikov
 ---
 
@@ -12,10 +12,11 @@ owner: Dmitry Kushnikov
 
 ## Changelog
 
+- **v1.2 (2026-09-01)** — v1.2 build plan (Slack-stack audit): **structural errors** — Slack failures (ok:false / SlackApiError / exceptions) raise `ToolError`, so the MCP result carries `is_error=true`; error text (`Error: <code> — <hint>`) unchanged, and the Slack error code is now extracted from `SlackApiError` so the §10 hint catalogue fires on live calls (§10). **Unread state** — §4.3 renders `last_read` / `unread` (was whitelisted away); DMs render `Channel: DM with <user>` instead of `#?`. **Default limit** — `conversations.history`/`replies` get `limit=100` injected when the caller passes none. **Args echo** — list shapes lead with `» <method> <k=v ...>` echoing the caller's request args (§8). **Blocks pre-validation** — caller-supplied section blocks >3000 chars are refused pre-flight with block index + hint instead of an API 400 (§10). **Tool surface** — the 13 convenience wrappers removed; surface is `slack_api` + `slack_download`.
 - **v1.1 (2026-08-21)** — minor, additive (issues #1/#3): §4.2b message extras — attachments (message shares, unfurls) and file stubs render in message lists and pins; `search.messages` nested `{"messages": {"matches": [...]}}` shape unwrapped (was erroring — FMT-003); §9 — streaming methods bot-only (pre-flight refusal under user token) + auto-split of >3000-char text into multiple section blocks on attribution wrap; §10 — `invalid_blocks` hint.
 - **v1.0 (2026-04-30)** — locked with the owner.
 
-What `slack_api(method, params, as_bot=...)` and convenience tools (`slack_react`, `slack_upload`, etc.) return as text. The contract LLM consumers can rely on, and the contract `formatters.py` must implement.
+What `slack_api(method, params, as_bot=...)` and `slack_download` return as text (v1.2 removed the typed convenience wrappers). The contract LLM consumers can rely on, and the contract `formatters.py` must implement.
 
 > [!info] How to read this doc
 > §2 is the orienting "why". §3 is the field taxonomy. §4 is the per-shape registry — that's the actual contract. §§5–10 are policy details (routing, truncation, lists, metadata, attribution, errors). §11 is out-of-scope. §12 is the locked decisions. Appendices give context.
@@ -111,14 +112,20 @@ Channel: #<name> (ID: <id>) <private>? <archived>? <general>?
   members: <num_members>
   topic: <topic.value>
   purpose: <purpose.value>
+  last_read: <ts>
+  unread: <unread_count> (<unread_count_display> display)?
   created: <YYYY-MM-DD>
 ```
 
 `<general>?` — emitted as the literal token `general` in the header line when `is_general=true`. Acts as a "tread carefully" signal for posts; everyone sees this channel.
 
-Preserved: `id`, `name`, `is_private`, `is_archived`, `is_general` (when true), `num_members`, `topic.value`, `purpose.value`, `created`.
+**DM header (v1.2):** when `is_im=true` (no `name`), the header is `Channel: DM with <user> (ID: <id>)` — was `#? (ID: D...)`.
+
+**Unread state (v1.2):** `last_read`, `unread_count`, `unread_count_display` render when Slack returns them (membership-dependent). `unread: 0` is shown — "all read" is information, not absence; the display variant is appended only when it differs. Previously whitelisted away, which made "what's unread?" unanswerable through the tool (incident 2026-09-01).
+
+Preserved: `id`, `name`, `is_private`, `is_archived`, `is_general` (when true), `is_im`+`user` (DM header), `num_members`, `topic.value`, `purpose.value`, `last_read`, `unread_count`, `unread_count_display`, `created`.
 `topic`/`purpose`: full, no cap.
-Dropped: `last_read`, `latest`, `parent_conversation`, `pending_shared`, locale.
+Dropped: `latest`, `parent_conversation`, `pending_shared`, locale.
 
 ### 4.4 Channel list (`conversations.list`)
 
@@ -302,6 +309,15 @@ When list exceeds cap: append `... and N more` as the last line. The cursor (if 
 - **`response_metadata.next_cursor`**: appended as `next_cursor=<cursor>` in the **list-shape header line only** (one location, not duplicated in footer). Omitted when empty.
 - **Slack `warning` field** (deprecation, missing optional scope): prefixed as a single `⚠️ <warning>` line **before everything else** in the output, including before shape header. Only one warning line per response, joined by `; ` if multiple.
 - **Rate-limit hints (`Retry-After`)**: Slack SDK raises `SlackApiError` on 429; caught in gateway, returned as `format_error("rate_limit", retry_after_str)`.
+- **Args echo (v1.2)** — list shapes only. List bodies don't self-identify (`12 members:` — of which channel?), so parallel responses were attributable only by call order (04-28 confusion class). When the gateway has the caller's request params, list-shape output leads with:
+
+  ```
+  » <method> <key>=<value> ...
+  ```
+
+  Echoed keys: `channel`, `ts`, `user`, `users`, `query`, `email`, `types` — the caller's **original** args (injected params like the default `limit` are not echoed). With none of these present, the line is `» <method>` alone. Order when combined: warning line (⚠️) first, then args echo, then shape body. Single-entity shapes (§4.1, §4.3, §4.5, …) are unchanged — they self-identify.
+
+- **Default limit (v1.2)** — `conversations.history` / `conversations.replies` called without `limit` get `limit=100` injected by the gateway (Slack would otherwise serve up to 1000 — three 78–98K-char responses in the 86-day audit). An explicit caller `limit` always wins. Pagination via `next_cursor` is unchanged.
 
 ## 9. Attribution policy (formalize current behavior)
 
@@ -320,12 +336,15 @@ v1.1 additions:
 
 ## 10. Error policy
 
-| Error type | Output |
+**Structural since v1.2:** every row below is raised as a `ToolError`, which FastMCP converts into an MCP result with `is_error=true` — callers detect failure structurally; the text below is the error message. (Pre-v1.2 these were plain success-content strings: a naive error detector saw 0% failures — 11/1045 calls in the 86-day audit were structurally invisible.) The gateway also extracts the Slack error code from `SlackApiError` (the WebClient raises on ok:false), so the hint catalogue fires on live calls — previously the code arrived buried inside `Error: exception — ...`.
+
+| Error type | Message text |
 |-----------|--------|
-| Slack `ok=false`, error code in hint catalogue | `Error: <error_code> — <hint>` |
-| Slack `ok=false`, error code not in catalogue | `Error: <error_code>` |
-| Network/SDK exception | `Error: exception — <str(exception)>` |
+| Slack `ok=false` / `SlackApiError`, error code in hint catalogue | `Error: <error_code> — <hint>` |
+| Slack `ok=false` / `SlackApiError`, error code not in catalogue | `Error: <error_code>` |
+| Network/SDK exception (no Slack error code) | `Error: exception — <str(exception)>` |
 | Missing required params (caught early) | `Error: missing_params — <which>` |
+| Caller-supplied section block >3000 chars (v1.2, pre-flight) | `Error: invalid_blocks — blocks[<i>] section text is <n> chars ...` — refused before the API call; auto-split (§9) covers plain `text` only, never caller blocks |
 
 ### How hints work
 
@@ -383,7 +402,7 @@ Locked 2026-04-30 in review with the owner.
 
 ## 14. Status
 
-v1.0 — locked 2026-04-30 with the owner. Implementation begins: redesign `format_response` per §4 dispatch + tests (unit per shape, gateway smoke, e2e against real Slack).
+v1.2 — 2026-09-01, implemented in the v1.2 build (headless AI-SDLC pilot run from the Slack-stack audit). v1.0 locked 2026-04-30 with the owner; v1.1 additions 2026-08-21.
 
 ---
 

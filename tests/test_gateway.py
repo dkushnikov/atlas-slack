@@ -1,5 +1,9 @@
 """Tests for the generic gateway tool."""
 
+import pytest
+from fastmcp.exceptions import ToolError
+from slack_sdk.errors import SlackApiError
+
 from atlas_slack.gateway import slack_api
 from atlas_slack.client import ATLAS_BOT_USER_ID
 
@@ -18,16 +22,36 @@ def test_slack_api_no_params(mock_webclient):
     assert "alice" in result
 
 
-def test_slack_api_error(mock_webclient):
+def test_slack_api_error_is_structural(mock_webclient):
+    """ok=false raises ToolError → FastMCP sets is_error=true on the MCP result."""
     mock_webclient.api_call.return_value = {"ok": False, "error": "not_authed"}
-    result = slack_api("chat.postMessage", {"channel": "C1", "text": "hi"})
-    assert "not_authed" in result
+    with pytest.raises(ToolError, match="not_authed"):
+        slack_api("chat.postMessage", {"channel": "C1", "text": "hi"})
 
 
-def test_slack_api_exception(mock_webclient):
+def test_slack_api_exception_is_structural(mock_webclient):
     mock_webclient.api_call.side_effect = Exception("connection timeout")
-    result = slack_api("users.list")
-    assert "connection timeout" in result
+    with pytest.raises(ToolError, match="connection timeout"):
+        slack_api("users.list")
+
+
+def test_slack_api_sdk_error_code_extracted_with_hint(mock_webclient):
+    """WebClient raises SlackApiError on ok=false — the error code must be
+    extracted so the ERROR_HINTS catalogue still applies (not buried in str(e))."""
+    mock_webclient.api_call.side_effect = SlackApiError(
+        message="The request to the Slack API failed.",
+        response={"ok": False, "error": "channel_not_found"},
+    )
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("conversations.history", {"channel": "C_BAD"})
+    assert "channel_not_found" in str(exc_info.value)
+    assert "DM channel IDs are per-viewer" in str(exc_info.value)
+
+
+def test_slack_api_sdk_error_without_code_falls_back_to_exception(mock_webclient):
+    mock_webclient.api_call.side_effect = SlackApiError(message="boom", response=None)
+    with pytest.raises(ToolError, match="exception"):
+        slack_api("users.list")
 
 
 def test_slack_api_default_uses_user_client(mock_webclient):
@@ -205,6 +229,67 @@ def test_slack_api_files_complete_upload_bot_mode_no_suffix(mock_webclient):
     assert call_params["initial_comment"] == "from Atlas"
 
 
+# === v1.2 fix #3 — default limit on history/replies ===
+
+def test_history_without_limit_gets_default_100(mock_webclient):
+    """No-limit history calls let Slack serve up to 1000 messages (3× 78–98K-char
+    responses in the audit) — the gateway must inject an explicit default."""
+    mock_webclient.api_call.return_value = {"ok": True, "messages": []}
+    slack_api("conversations.history", {"channel": "C1"})
+    assert mock_webclient.api_call.call_args.kwargs["params"]["limit"] == 100
+
+
+def test_replies_without_limit_gets_default_100(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "messages": []}
+    slack_api("conversations.replies", {"channel": "C1", "ts": "1.0"})
+    assert mock_webclient.api_call.call_args.kwargs["params"]["limit"] == 100
+
+
+def test_explicit_limit_preserved(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "messages": []}
+    slack_api("conversations.history", {"channel": "C1", "limit": 500})
+    assert mock_webclient.api_call.call_args.kwargs["params"]["limit"] == 500
+
+
+def test_default_limit_not_injected_elsewhere(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "channels": []}
+    slack_api("conversations.list", {"types": "public_channel"})
+    assert "limit" not in mock_webclient.api_call.call_args.kwargs["params"]
+
+
+# === v1.2 fix #4 — caller-blocks pre-validation ===
+
+def test_oversized_caller_section_fails_fast_with_hint(mock_webclient):
+    """Repro of the 07-30 invalid_blocks incident: caller-supplied section >3000
+    chars must fail pre-flight with an actionable hint, not an API 400."""
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "x" * 3500}}]
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("chat.postMessage", {"channel": "C1", "blocks": blocks}, as_bot=True)
+    msg = str(exc_info.value)
+    assert "invalid_blocks" in msg
+    assert "blocks[0]" in msg
+    assert "3500" in msg
+    assert "blocks.validate" in msg
+    mock_webclient.api_call.assert_not_called()
+
+
+def test_valid_caller_blocks_pass_validation(mock_webclient):
+    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": "x" * 3000}},
+        {"type": "divider"},
+    ]
+    slack_api("chat.postMessage", {"channel": "C1", "blocks": blocks}, as_bot=True)
+    mock_webclient.api_call.assert_called_once()
+
+
+def test_blocks_validation_applies_in_user_mode_before_attribution(mock_webclient):
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "y" * 4000}}]
+    with pytest.raises(ToolError, match="invalid_blocks"):
+        slack_api("chat.update", {"channel": "C1", "ts": "1.0", "blocks": blocks})
+    mock_webclient.api_call.assert_not_called()
+
+
 # === Contract smoke — output-contract.md end-to-end via gateway ===
 
 def test_smoke_message_list_full_text_via_gateway(mock_webclient):
@@ -216,6 +301,14 @@ def test_smoke_message_list_full_text_via_gateway(mock_webclient):
     }
     result = slack_api("conversations.replies", {"channel": "C1", "ts": "1.0"})
     assert long in result
+
+
+def test_smoke_args_echo_via_gateway(mock_webclient):
+    """List responses lead with the caller's args — original params, not the
+    injected ones (limit=100 must not appear in the echo)."""
+    mock_webclient.api_call.return_value = {"ok": True, "messages": [{"ts": "1.0", "user": "U1", "text": "hi"}]}
+    result = slack_api("conversations.history", {"channel": "C1"})
+    assert result.split("\n")[0] == "» conversations.history channel=C1"
 
 
 def test_smoke_cursor_passes_through_gateway(mock_webclient):
@@ -240,11 +333,12 @@ def test_smoke_warning_prefixed_via_gateway(mock_webclient):
 
 
 def test_smoke_error_hint_via_gateway(mock_webclient):
-    """ERROR_HINTS catalogue must trigger when gateway returns ok=false."""
+    """ERROR_HINTS catalogue must trigger when gateway sees ok=false."""
     mock_webclient.api_call.return_value = {"ok": False, "error": "channel_not_found"}
-    result = slack_api("conversations.history", {"channel": "C_BAD"})
-    assert "channel_not_found" in result
-    assert "DM channel IDs are per-viewer" in result
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("conversations.history", {"channel": "C_BAD"})
+    assert "channel_not_found" in str(exc_info.value)
+    assert "DM channel IDs are per-viewer" in str(exc_info.value)
 
 
 def test_smoke_file_upload_permalink_returned(mock_webclient):
@@ -295,8 +389,8 @@ def test_smoke_long_thread_shows_count_marker(mock_webclient):
 def test_stream_methods_user_mode_refused(mock_webclient):
     """User-token streams would post recipient-facing text with no attribution point."""
     for method in ("chat.startStream", "chat.appendStream", "chat.stopStream"):
-        result = slack_api(method, {"channel": "C1"})
-        assert "user_token_stream" in result
+        with pytest.raises(ToolError, match="user_token_stream"):
+            slack_api(method, {"channel": "C1"})
     mock_webclient.api_call.assert_not_called()
 
 

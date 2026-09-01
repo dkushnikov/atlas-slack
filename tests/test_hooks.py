@@ -24,8 +24,11 @@ def run_gate(tool_name: str, tool_input: dict) -> dict:
     return json.loads(proc.stdout)["hookSpecificOutput"]
 
 
-def api(method: str) -> dict:
-    return run_gate("mcp__plugin_atlas-slack_atlas-slack__slack_api", {"method": method})
+def api(method: str, params: dict | None = None) -> dict:
+    tool_input = {"method": method}
+    if params is not None:
+        tool_input["params"] = params
+    return run_gate("mcp__plugin_atlas-slack_atlas-slack__slack_api", tool_input)
 
 
 class TestSlackApiGate:
@@ -60,9 +63,45 @@ class TestSlackApiGate:
     def test_blocks_validate_allowed(self):
         assert api("blocks.validate")["permissionDecision"] == "allow"
 
+    def test_users_conversations_allowed(self):
+        """The conversations.open hint points here — it must actually be a read."""
+        assert api("users.conversations")["permissionDecision"] == "allow"
 
-class TestConvenienceToolGate:
-    def test_convenience_write_asks(self):
+
+class TestConversationsOpenHint:
+    """v1.2 fix #6 — conversations.open creates a DM/MPIM (incident 08-28:
+    accidental empty mpdm). The ask-text must say so and name the read path."""
+
+    def test_single_user_dm_hint(self):
+        out = api("conversations.open", {"users": "U123"})
+        assert out["permissionDecision"] == "ask"
+        reason = out["permissionDecisionReason"]
+        assert "1:1 DM with U123" in reason
+        assert "users.conversations" in reason
+
+    def test_multi_party_lists_members(self):
+        out = api("conversations.open", {"users": "U1, U2,U3"})
+        assert out["permissionDecision"] == "ask"
+        reason = out["permissionDecisionReason"]
+        assert "group DM (MPIM)" in reason
+        assert "3 users" in reason
+        assert "U1, U2, U3" in reason
+        assert "users.conversations" in reason
+
+    def test_channel_reopen_hint(self):
+        out = api("conversations.open", {"channel": "D2SH1V09K"})
+        assert out["permissionDecision"] == "ask"
+        assert "reopens conversation D2SH1V09K" in out["permissionDecisionReason"]
+
+    def test_no_params_still_warns(self):
+        out = api("conversations.open")
+        assert out["permissionDecision"] == "ask"
+        assert "creates a DM/MPIM" in out["permissionDecisionReason"]
+
+
+class TestOtherToolGate:
+    def test_unknown_tool_asks(self):
+        """Removed convenience tools / future ungated tools fall through to ask."""
         out = run_gate("mcp__plugin_atlas-slack_atlas-slack__slack_react", {"channel": "C1"})
         assert out["permissionDecision"] == "ask"
 

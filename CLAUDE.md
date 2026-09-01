@@ -1,12 +1,12 @@
 # atlas-slack — Atlas Plugin
 
-Full Slack Web API access via MCP. Gateway for all 200+ methods + 14 convenience tools.
+Full Slack Web API access via MCP. Gateway for all 200+ methods + slack_download.
 
 ## Quick Reference
 
 - **Type:** Plugin (MCP server + skills)
 - **Marketplace:** atlas-slack
-- **MCP tools:** 15 (1 gateway + 14 convenience wrappers)
+- **MCP tools:** 2 (slack_api gateway + slack_download; the 13 convenience wrappers were removed in v1.2 — 0 calls in 86 days)
 - **Stack:** Python 3.12+, FastMCP, slack_sdk
 - **Transport:** stdio
 
@@ -62,7 +62,7 @@ Each machine needs its own `~/.zshenv`. For distributed setup, server gets only 
 
 Two PreToolUse hooks, both shipped inside the plugin at `plugins/atlas-slack/hooks/`:
 
-- **`mcp-slack-gate.py`** — matcher `mcp__plugin_atlas-slack`. Gates MCP tool calls. Reads (search.*, auth.*, *.list, *.info, *.history, *.get, *.members, *.replies, *.test, dnd.info, reminders.list, etc.) → auto-allow. Writes (convenience tools + all non-read slack_api methods) → ask user confirmation.
+- **`mcp-slack-gate.py`** — matcher `mcp__plugin_atlas-slack`. Gates MCP tool calls. Reads (search.*, auth.*, *.list, *.info, *.history, *.get, *.members, *.replies, *.test, dnd.info, reminders.list, users.conversations, etc.) → auto-allow. Writes (all non-read slack_api methods) → ask user confirmation; conversations.open asks with a creates-DM/MPIM warning.
 - **`bash-slack-gate.py`** — matcher `Bash`. Blocks raw `curl slack.com/api/*` and `security find-generic-password ... slack` with message pointing at `slack_api`. Allows legitimate binary uploads to `files.slack.com`.
 
 Ship atomically with the plugin — no user settings.json configuration required. The earlier external `<atlas>/bin/slack-gate.{sh,py}` was removed 2026-04-14 (replaced by these plugin-internal hooks).
@@ -83,9 +83,10 @@ Ship atomically with the plugin — no user settings.json configuration required
 - Plugin: registered and installed
 - Hooks: `mcp-slack-gate.py` (MCP write gate) + `bash-slack-gate.py` (curl bypass blocker) — both inside plugin
 - Bot scopes: 48, User scopes: 29
-- Tests: 160 passing (+6 e2e, gated by SLACK_E2E=1)
+- Tests: 166 passing (+6 e2e, gated by SLACK_E2E=1)
 - Streams (`chat.*Stream`): bot-only policy; gate allows append/stop, asks on start (2026-08-21)
 - History output renders attachments (message shares) + file stubs — contract v1.1 (2026-08-21)
+- **v1.2 (2026-09-01):** structural errors (`is_error=true` + hint-catalogue fix), unread state in channel info, default limit=100 on history/replies, args-echo on list shapes, caller-blocks pre-validation, conversations.open gate hint, convenience wrappers removed (surface = slack_api + slack_download). See output-contract v1.2 changelog + KNOWN_ISSUES ERR-001/FMT-004..006/UPL-001/GATE-001. **MCP restart pending** — next interactive session picks up plugin 0.2.0.
 
 ## What's Next
 

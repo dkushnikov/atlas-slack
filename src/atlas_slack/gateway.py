@@ -1,6 +1,8 @@
 """Generic Slack API gateway — one tool for all 200+ methods."""
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from slack_sdk.errors import SlackApiError
 
 from atlas_slack.client import get_client, ATLAS_BOT_USER_ID
 from atlas_slack.formatters import format_response, format_error
@@ -9,12 +11,11 @@ mcp = FastMCP(
     "atlas-slack",
     instructions=(
         "Full Slack Web API access. Use slack_api to call any Slack method "
-        "(reactions.add, conversations.create, reminders.add, users.profile.set, etc). "
-        "Convenience tools available for common operations: slack_react, slack_set_status, "
-        "slack_remind, slack_pin, slack_upload, slack_edit, slack_delete, slack_create_channel, "
-        "slack_invite, slack_archive, slack_usergroup, slack_bookmark, slack_dnd, slack_download. "
+        "(reactions.add, conversations.open, reminders.add, users.profile.set, "
+        "pins.add, chat.update, chat.delete, dnd.setSnooze, etc — all 200+ methods). "
         "Use slack_download to save a Slack file to local disk (the JSON API never serves "
-        "file bytes — never curl url_private). "
+        "file bytes — never curl url_private). File uploads go through the 3-step "
+        "files.getUploadURLExternal → binary PUT → files.completeUploadExternal flow. "
         "Pass as_bot=True for posts/reactions/writes to appear as Atlas; "
         "as_bot=False (default) posts as the owner with :blue_heart: @Atlas attribution. "
         "Attribution is auto-applied to user-token sends on chat.postMessage, chat.update, "
@@ -22,7 +23,8 @@ mcp = FastMCP(
         "files.completeUploadExternal.initial_comment (text suffix); long text is "
         "auto-split into ≤3000-char sections. Streaming methods (chat.startStream/"
         "appendStream/stopStream) are bot-only — always pass as_bot=True for them. "
-        "Never fall back to raw curl or bash — slack_api covers all 200+ Slack Web API methods."
+        "Slack failures return is_error=true with 'Error: <code> — <hint>' text. "
+        "Never fall back to raw curl or bash — slack_api covers the whole Web API."
     ),
 )
 
@@ -53,6 +55,41 @@ STREAM_METHODS = frozenset({
 
 # Slack caps a section block's text at 3000 chars; longer → invalid_blocks.
 SECTION_TEXT_LIMIT = 3000
+
+# Slack's default for these is 100 messages but historically the tool passed no
+# limit and Slack served up to 1000 — three oversized responses (78–98K chars)
+# hit sessions on 08-04/13/15. Inject an explicit default; callers override freely.
+DEFAULT_LIMIT_METHODS = frozenset({
+    "conversations.history",
+    "conversations.replies",
+})
+DEFAULT_HISTORY_LIMIT = 100
+
+
+def _slack_error(code: str, detail: str = "") -> ToolError:
+    """Build a structural tool error (output-contract v1.2 §10).
+
+    FastMCP converts a raised ToolError into an MCP result with is_error=true,
+    so callers detect Slack failures structurally instead of parsing text.
+    The text (with the ERROR_HINTS recovery hint, when catalogued) is preserved
+    as the error message.
+    """
+    return ToolError(format_error(code, detail))
+
+
+def _error_code_from(e: SlackApiError) -> str:
+    """Extract the Slack error code from a SlackApiError, '' if unavailable.
+
+    The WebClient raises on ok=false, so without this the hint catalogue would
+    be bypassed — the code would arrive buried inside str(e) as 'exception'.
+    """
+    resp = e.response
+    if resp is None:
+        return ""
+    try:
+        return resp.get("error") or ""
+    except Exception:
+        return ""
 
 
 def _attribution_block() -> dict:
@@ -114,6 +151,32 @@ def _inject_attribution_suffix(params: dict, key: str) -> dict:
     return params
 
 
+def _validate_caller_blocks(params: dict) -> None:
+    """Pre-flight check of caller-supplied blocks against Slack's section cap.
+
+    The attribution auto-split (§9) covers plain `text` only — caller blocks pass
+    through untouched, so an oversized section previously died as a bare API 400
+    `invalid_blocks` (incident 2026-07-30). Fail fast with the offending block
+    index and length instead.
+    """
+    blocks = params.get("blocks")
+    if not isinstance(blocks, list):
+        return
+    for i, block in enumerate(blocks):
+        if not isinstance(block, dict) or block.get("type") != "section":
+            continue
+        text_obj = block.get("text")
+        text = text_obj.get("text", "") if isinstance(text_obj, dict) else ""
+        if isinstance(text, str) and len(text) > SECTION_TEXT_LIMIT:
+            raise _slack_error(
+                "invalid_blocks",
+                f"blocks[{i}] section text is {len(text)} chars — Slack caps section "
+                f"text at {SECTION_TEXT_LIMIT}. Split it into multiple section blocks "
+                "(auto-split covers plain `text`, not caller-supplied blocks), or "
+                "pre-check with blocks.validate.",
+            )
+
+
 def _maybe_inject_attribution(method: str, params: dict) -> dict:
     """Method-aware attribution injection for user-token recipient-facing sends.
 
@@ -149,7 +212,7 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False) -> 
         slack_api('conversations.list', {'types': 'private_channel', 'limit': 20})  # read as user
     """
     if method in STREAM_METHODS and not as_bot:
-        return format_error(
+        raise _slack_error(
             "user_token_stream",
             "chat.*Stream is a bot/agent surface — call with as_bot=True "
             "(streams post as Atlas; the :blue_heart: footer doesn't apply).",
@@ -157,15 +220,29 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False) -> 
     try:
         client = get_client(as_bot=as_bot)
         call_params = params or {}
+        if method in DEFAULT_LIMIT_METHODS and "limit" not in call_params:
+            call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
+        if method in BLOCKS_METHODS:
+            _validate_caller_blocks(call_params)
         if not as_bot:
             call_params = _maybe_inject_attribution(method, call_params)
         resp = client.api_call(method, params=call_params)
-        if isinstance(resp, dict):
-            return format_response(method, resp)
-        return format_response(method, resp.data if hasattr(resp, "data") else {"ok": True})
+        data = resp if isinstance(resp, dict) else (resp.data if hasattr(resp, "data") else {"ok": True})
+    except SlackApiError as e:
+        code = _error_code_from(e)
+        if code:
+            raise _slack_error(code) from e
+        raise _slack_error("exception", str(e)) from e
+    except ToolError:
+        raise
     except Exception as e:
-        return format_error("exception", str(e))
+        raise _slack_error("exception", str(e)) from e
+    if not data.get("ok", True):
+        raise _slack_error(data.get("error") or "unknown_error")
+    # Echo the caller's original args (pre-injection) — see _args_echo (v1.2 §8)
+    return format_response(method, data, req_params=params or {})
 
 
-# Register convenience tools on the same mcp instance
+# Register slack_download on the same mcp instance (the one operation the
+# JSON gateway cannot express — authenticated binary GET of file bytes)
 import atlas_slack.tools  # noqa: F401
