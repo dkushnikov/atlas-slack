@@ -151,3 +151,41 @@ def test_chat_delete_returns_done(channel):
 
     delete_result = slack_api("chat.delete", {"channel": channel, "ts": ts}, as_bot=False)
     assert delete_result == "Done ✓"
+
+
+# === UPL-002: files.uploadV2 through the SDK (getUploadURLExternal → PUT → complete) ===
+
+@pytest.mark.parametrize("as_bot", [True, False])
+def test_file_upload_v2_round_trip(channel, tmp_path, as_bot):
+    """Upload a small text file into the test channel as bot and as user; the
+    result carries a permalink, the user-mode share carries the :blue_heart:
+    suffix. File deleted on teardown (files.delete — same token that uploaded)."""
+    import re
+    f = tmp_path / "atlas-slack-e2e.txt"
+    f.write_text("atlas-slack e2e upload probe\n")
+    result = slack_api(
+        "files.uploadV2",
+        {"file": str(f), "channel": channel, "title": "e2e probe",
+         "initial_comment": "e2e upload probe — will be deleted"},
+        as_bot=as_bot,
+    )
+    m = re.search(r"\(ID: (F\w+)\)", result)
+    assert m, result
+    fid = m.group(1)
+    try:
+        assert "permalink: https://" in result
+        info = slack_api("files.info", {"file": fid})
+        assert "e2e probe" in info
+        if not as_bot:
+            from atlas_slack.client import ATLAS_BOT_USER_ID
+            shares = slack_api("conversations.history", {"channel": channel, "limit": 5}, as_bot=False)
+            assert f"<@{ATLAS_BOT_USER_ID}>" in shares or ":blue_heart:" in shares
+    finally:
+        # files.delete leaves the share message as a tombstone — delete it too.
+        slack_api("files.delete", {"file": fid}, as_bot=as_bot)
+        hist = slack_api("conversations.history", {"channel": channel, "limit": 5}, as_bot=False)
+        for ts in re.findall(r"\[(\d+\.\d+)\][^\[]*e2e upload probe", hist):
+            try:
+                slack_api("chat.delete", {"channel": channel, "ts": ts}, as_bot=as_bot)
+            except Exception:
+                pass

@@ -134,9 +134,9 @@ The manual workarounds (A/B) documented earlier in the skill are no longer neces
 
 ### Related references
 
-- Memory: `~/.claude/projects/-Users-owner-Atlas/memory/reference/reference_atlas-slack-footer-coverage.md`
-- Memory: `~/.claude/projects/-Users-owner-Atlas/memory/feedback/feedback_tool-encodes-truth.md` — same class of issue
-- Memory: `~/.claude/projects/-Users-owner-Atlas/memory/feedback/feedback_source-and-empirical-before-tooling.md` — verify tool semantics empirically
+- This file plus `tests/test_gateway.py` (footer assertions on both paths) are the source of truth for footer coverage. The Atlas reference memory that duplicated it was retired 2026-10-14; its history is in `<atlas>` git.
+- Same class of issue — a doc that softly disagrees with the shipped tool: `<atlas>/memory/feedback/feedback_verify-premise-when-advocating.md` (the mechanism is the truth; provenance decides whether the doc is stale or ahead).
+- Verify tool semantics empirically before encoding them: `<atlas>/rules/reality-check.md` (docs → installed source → empirical test).
 
 ---
 
@@ -240,7 +240,7 @@ List shapes lead with an args-echo line `» <method> channel=C123 ...` echoing t
 
 ### Resolution (v1.2)
 
-`slack_upload` removed with the convenience-wrapper cut (fix #7). The documented 3-step flow (`files.getUploadURLExternal` → binary PUT → `files.completeUploadExternal` with string `channel_id`) is immune, live-verified into DM D2SH1V09K same day (file `F0BU04ZPE3D`, shared with attribution suffix). Gotcha recorded in the skill: DM IDs are per-viewer — bot-token uploads need the bot-side DM ID via `conversations.open`. MC memory `feedback_slack_upload_dm_bug` updated/closed.
+`slack_upload` removed with the convenience-wrapper cut (fix #7). The documented 3-step flow (`files.getUploadURLExternal` → binary PUT → `files.completeUploadExternal` with string `channel_id`) is immune, live-verified into DM D2SH1V09K same day (file `F0BU04ZPE3D`, shared with attribution suffix) — but it left agent sessions without a tool for the PUT; see UPL-002 for the v1.3 `files.uploadV2` mapping that replaced it as the documented path. Gotcha recorded in the skill: DM IDs are per-viewer — bot-token uploads need the bot-side DM ID via `conversations.open`. MC memory `feedback_slack_upload_dm_bug` updated/closed.
 
 ---
 
@@ -255,3 +255,22 @@ The gate's ask-text for `conversations.open` was the generic `Slack write: conve
 ### Resolution (v1.2)
 
 `mcp-slack-gate.py` emits an explanatory reason: creates/opens DM vs group DM (MPIM member list included), and points at `users.conversations` as the read-side lookup — which is now correctly classified as a read (it previously fell through to "ask" because `.conversations` matched no read suffix). Tests in `TestConversationsOpenHint`.
+
+---
+
+## UPL-002 — No upload path from agent sessions: `files.uploadV2` is not a Web API method, binary PUT has no tool
+
+**Severity:** Medium · **Status:** Resolved · **Reported:** 2026-09-03 · **Fixed:** 2026-10-22 (v1.3) · **Issue:** [#4](https://github.com/dkushnikov/atlas-slack/issues/4)
+
+### Symptom
+
+`slack_api('files.uploadV2', …)` returns `unknown_method` live (bot token, 2026-09-03): the method exists only as slack_sdk `WebClient.files_upload_v2`, and the gateway dispatches through `client.api_call`. `tests/test_gateway.py::test_smoke_file_upload_permalink_returned` passes against a mock that accepts any method name — false-green. The documented 3-step flow (`files.getUploadURLExternal` → binary PUT → `files.completeUploadExternal`) has no tool for the PUT: the gateway cannot POST bytes, `curl`/`wget` are denied in the cockpit and vault permissions. Incident: the Creator Post Boosting one-pager for a colleague (23:27 BST, `F0BUY507FPT`) was uploaded with a Python stdlib HTTP call outside the plugin. Visible side effect: file posts carry the `:blue_heart: @Atlas` attribution as a text suffix (`SUFFIX_METHODS`), `chat.postMessage` as a context block (`BLOCKS_METHODS`) — by design (ATT-001), but it reads as inconsistent (compare `C0BRX9SLQA0/p1788471220408099` and `D0A1D8X25SL/p1788472027062419`).
+
+### Resolution (v1.3)
+
+`gateway._upload_v2` maps `files.uploadV2` to `client.files_upload_v2(...)` (slack_sdk 3.41.0 runs the three steps internally); the v1.2 surface is unchanged. Pre-flight: a string in `channels` is refused with a pointer to `channel` (UPL-001 regression guard); `file` must be an absolute, existing path (the MCP server's cwd is not the session's); `content` / `file_uploads` pass through. Attribution (user token): text suffix on `initial_comment` by default; `attribution: "block"` uploads without the comment and posts it as a separate `chat.postMessage` with the context block and `<permalink|title>` — the result carries `comment: posted ts=…`. Bot uploads untouched. The gate asks on `files.uploadV2` (fall-through write; pinned in `TestSlackApiGate.test_upload_v2_asks`). The false-green smoke test now asserts the dispatch (`files_upload_v2` called, `api_call` not). Live-verified 2026-10-22: bot upload into `D0ARL945PD1`, user upload into `D2SH1V09K` (e2e `test_file_upload_v2_round_trip`, both modes), block-mode upload + comment in `D2SH1V09K` (file + message deleted after). Repeat offenders before the fix: a colleague one-pager (09-03), Lu memo (10-15), two colleagues SQL (10-17) — each a hand-rolled PUT outside the plugin.
+
+### Related references
+
+- UPL-001 (wrapper removal), ATT-001 (suffix vs block by method)
+- Ledger of the incident: MC vault `notes/comms/2026-09-03--colleague--post-boosting-one-pager.md`

@@ -67,6 +67,12 @@ class TestSlackApiGate:
         """The conversations.open hint points here — it must actually be a read."""
         assert api("users.conversations")["permissionDecision"] == "allow"
 
+    def test_upload_v2_asks(self):
+        """files.uploadV2 (UPL-002, SDK-mapped) is a write — gated like completeUploadExternal."""
+        out = api("files.uploadV2", {"channel": "C1", "file": "/tmp/x.txt"})
+        assert out["permissionDecision"] == "ask"
+        assert "files.uploadV2" in out["permissionDecisionReason"]
+
 
 class TestConversationsOpenHint:
     """v1.2 fix #6 — conversations.open creates a DM/MPIM (incident 08-28:

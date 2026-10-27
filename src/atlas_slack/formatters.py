@@ -46,7 +46,7 @@ def format_error(error_code: str, detail: str = "") -> str:
     return msg
 
 
-def format_response(method: str, resp: dict, req_params: dict | None = None) -> str:
+def format_response(method: str, resp: dict, req_params: dict | None = None, raw: bool = False) -> str:
     """Dispatch a Slack API response to its shape handler per output-contract.md.
 
     Order of operations:
@@ -56,6 +56,8 @@ def format_response(method: str, resp: dict, req_params: dict | None = None) -> 
       4. Otherwise dispatch by method, falling back to shape inference, then JSON.
       5. For list shapes, prepend the args-echo line (v1.2 §8) when req_params given.
       6. Prepend warning line if any.
+    `raw=True` (caller flag `_raw`, v1.3) skips step 4: the cleaned response is
+    dumped as JSON (§4.16) with no args-echo — for delivery checks and debugging.
     """
     if not resp.get("ok", True):
         return format_error(resp.get("error", "unknown_error"))
@@ -69,6 +71,8 @@ def format_response(method: str, resp: dict, req_params: dict | None = None) -> 
 
     if not cleaned or method in _EMPTY_SUCCESS_METHODS:
         body = "Done ✓"
+    elif raw:
+        body = _h_unknown(method, cleaned, cursor)
     else:
         handler = _DISPATCH.get(method) or _infer_handler(cleaned)
         body = handler(method, cleaned, cursor)
@@ -512,7 +516,38 @@ def _h_file_single(method: str, c: dict, cursor: str) -> str:
         lines.append(f"  title: {title}")
     if created:
         lines.append(f"  created: {_ts_to_date(created)}")
+    lines.extend(_transcription_lines(f, fid))
     return "\n".join(lines)
+
+
+TRANSCRIPT_PREVIEW_CAP = 160
+
+
+def _transcription_lines(f: dict, fid: str) -> list[str]:
+    """§4.8 (v1.3) — Slack's own transcript of a video/clip, when it has one.
+
+    files.info carries `transcription: {status, locale, preview: {content,
+    has_more}}` and a `vtt` URL once Slack has transcribed the media; status
+    "none" (or no key) renders nothing. The VTT is fetched with
+    slack_download(file_id, vtt=True). Whether Slack's transcript is good
+    enough, or Scribe is needed, stays the caller's call (2026-09-29 clip).
+    """
+    tr = f.get("transcription")
+    if not isinstance(tr, dict) or not tr.get("status") or tr.get("status") == "none":
+        return []
+    line = f"  transcription: {tr['status']}"
+    if tr.get("locale"):
+        line += f" ({tr['locale']})"
+    preview = tr.get("preview") if isinstance(tr.get("preview"), dict) else {}
+    content = " ".join((preview.get("content") or "").split())
+    if content:
+        cut = content[:TRANSCRIPT_PREVIEW_CAP]
+        more = "…" if len(content) > TRANSCRIPT_PREVIEW_CAP or preview.get("has_more") else ""
+        line += f' — "{cut}{more}"'
+    out = [line]
+    if f.get("vtt"):
+        out.append(f"  vtt: available — slack_download('{fid}', vtt=True)")
+    return out
 
 
 def _h_file_list(method: str, c: dict, cursor: str) -> str:

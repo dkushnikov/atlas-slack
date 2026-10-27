@@ -12,6 +12,7 @@ owner: Dmitry Kushnikov
 
 ## Changelog
 
+- **v1.3 (2026-10-22)** — UPL-002 (issue #4): **`files.uploadV2` is live** — the gateway maps it to slack_sdk `files_upload_v2` (getUploadURLExternal → PUT → completeUploadExternal run by the SDK); before, it returned `unknown_method` and uploads from agent sessions needed a hand-rolled HTTP PUT outside the plugin. Pre-flight: `channel` string (a string in `channels` is refused — UPL-001), `file` absolute and existing, `content`/`file_uploads` passed through. §9 — attribution on `initial_comment` as a text suffix (as `completeUploadExternal`); `attribution: "block"` posts the comment separately with the context block and `<permalink|title>`. Render unchanged (§4.8/§4.9) plus a `comment: posted ts=…` line in block mode. Gate: `files.uploadV2` asks, like every write. **Same day, MC ask after the live checks:** **bot auto-split** — `as_bot=True` on `chat.postMessage`/`update`/`scheduleMessage` with `text` > 3000 chars and no caller `blocks` gets the §9 section split (no context block); `text` kept as the fallback. **`_raw` flag** — `"_raw": true` in params is stripped before the call and the response is rendered as §4.16 JSON with no args-echo (delivery checks: the `blocks` of a sent message). **Transcription in §4.8** — `files.info` renders `transcription: <status> (<locale>) — "<preview ≤160>…"` and `vtt: available — slack_download(id, vtt=True)` when Slack has transcribed the media; `slack_download(…, vtt=True)` fetches the WebVTT (`no_transcript` when there is none).
 - **v1.2 (2026-09-01)** — v1.2 build plan (Slack-stack audit): **structural errors** — Slack failures (ok:false / SlackApiError / exceptions) raise `ToolError`, so the MCP result carries `is_error=true`; error text (`Error: <code> — <hint>`) unchanged, and the Slack error code is now extracted from `SlackApiError` so the §10 hint catalogue fires on live calls (§10). **Unread state** — §4.3 renders `last_read` / `unread` (was whitelisted away); DMs render `Channel: DM with <user>` instead of `#?`. **Default limit** — `conversations.history`/`replies` get `limit=100` injected when the caller passes none. **Args echo** — list shapes lead with `» <method> <k=v ...>` echoing the caller's request args (§8). **Blocks pre-validation** — caller-supplied section blocks >3000 chars are refused pre-flight with block index + hint instead of an API 400 (§10). **Tool surface** — the 13 convenience wrappers removed; surface is `slack_api` + `slack_download`.
 - **v1.1 (2026-08-21)** — minor, additive (issues #1/#3): §4.2b message extras — attachments (message shares, unfurls) and file stubs render in message lists and pins; `search.messages` nested `{"messages": {"matches": [...]}}` shape unwrapped (was erroring — FMT-003); §9 — streaming methods bot-only (pre-flight refusal under user token) + auto-split of >3000-char text into multiple section blocks on attribution wrap; §10 — `invalid_blocks` hint.
 - **v1.0 (2026-04-30)** — locked with the owner.
@@ -181,7 +182,7 @@ File: <name> (ID: <id>)
   created: <YYYY-MM-DD>
 ```
 
-`permalink` is **first** after name — most common need post-upload.
+`permalink` is **first** after name — most common need post-upload. Transcription (v1.3): when `transcription.status` is not `none`, one line `transcription: <status> (<locale>) — "<preview, ≤160 chars>…"`, and `vtt: available — slack_download('<id>', vtt=True)` when the `vtt` URL is present (Slack transcribes clips and uploaded video asynchronously; uploaded mp4s had `complete`/`en-US` live on 2026-10-22, three native clips had `none`).
 
 ### 4.9 File list (`files.list`, `files.uploadV2` result)
 
@@ -249,7 +250,7 @@ Done ✓
 <pretty JSON, indent=2, ensure_ascii=False>
 ```
 
-Last resort. Stable behavior: never raise, never truncate, just dump.
+Last resort. Stable behavior: never raise, never truncate, just dump. Also the explicit path (v1.3): `"_raw": true` in the caller's params routes any method's response here (the cleaned dict — `ok`/`response_metadata` stripped, cursor as `_next_cursor`), without the args-echo line — the only way to inspect fields the shapes drop (`blocks`, `metadata`, …). Reserved flag, stripped before the API call; use with `limit: 1`.
 
 If JSON fallback hits a method that returns a large response (e.g. an unrecognized list endpoint), the right fix is to **add the shape to the registry**, not to truncate. JSON fallback is intentionally permissive — its output size signals a missing shape entry.
 
@@ -324,15 +325,16 @@ When list exceeds cap: append `... and N more` as the last line. The cursor (if 
 When `as_bot=False` (the owner's user token, recipient-facing):
 
 - `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` → append Block Kit context block: `:blue_heart: <@ATLAS_BOT_USER_ID>`. If no `blocks` key in params, wrap existing `text` into a section block first.
-- `files.completeUploadExternal.initial_comment`, `chat.meMessage.text` → append text suffix: `\n\n:blue_heart: <@ATLAS_BOT_USER_ID>`.
+- `files.uploadV2.initial_comment`, `files.completeUploadExternal.initial_comment`, `chat.meMessage.text` → append text suffix: `\n\n:blue_heart: <@ATLAS_BOT_USER_ID>` (a file-share message cannot carry blocks). `files.uploadV2` with `attribution: "block"` (v1.3): the file is uploaded without the comment, then one `chat.postMessage` carries the comment (auto-split sections), `<permalink|title>` and the context block — two messages, block attribution preserved; `thread_ts` is carried over. Ignored under `as_bot=True`.
 - All other methods (reactions, pins, reads, profile, dnd) → no injection.
 
-When `as_bot=True` → never inject.
+When `as_bot=True` → never inject. The auto-split still applies (v1.3): `chat.postMessage` / `chat.update` / `chat.scheduleMessage` with plain `text` > 3000 chars and no caller `blocks` get the same section split, without the context block; `text` stays as the notification fallback.
 
 v1.1 additions:
 
 - **Streaming is bot-only.** `chat.startStream` / `chat.appendStream` / `chat.stopStream` have no reliable attribution point (chunks arrive incrementally), so `as_bot=False` stream calls are refused pre-flight with `Error: user_token_stream — …` rather than ever posting unattributed. Streams post as Atlas.
-- **Auto-split on attribution wrap.** When wrapping plain `text` into blocks, text >3000 chars is split into multiple ≤3000-char `section` blocks at newline/space boundaries (concatenation reproduces the input exactly; multiple sections render seamlessly). Slack's per-section cap otherwise fails the send with `invalid_blocks`. Caller-supplied `blocks` are never rewritten — they fail fast with the `invalid_blocks` hint (§10), pre-checkable via `blocks.validate`.
+- **Auto-split on attribution wrap.** When wrapping plain `text` into blocks, text >3000 chars is split into multiple ≤3000-char `section` blocks at newline/space boundaries (concatenation reproduces the input exactly; multiple sections render seamlessly). Slack's per-section cap otherwise fails the send with `invalid_blocks`. Caller-supplied `blocks` are never rewritten — they fail fast with the `invalid_blocks` hint (§10), pre-checkable via `blocks.validate`. Every auto-split section carries `expand: true`, so the client does not fold each chunk under "Show more" (2026-10-20).
+- **Nested params travel as JSON strings.** `slack_api` JSON-encodes every list/dict value (`blocks`, `attachments`, `view`, `metadata`, …) before the form-encoded call, for every method. Before 2026-10-20 a nested list left as its Python repr: strings survived, any boolean broke the block with `invalid_blocks_format`.
 
 ## 10. Error policy
 

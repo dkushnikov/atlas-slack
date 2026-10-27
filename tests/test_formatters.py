@@ -810,3 +810,33 @@ class TestSearchMessagesShape:
     def test_search_empty_matches(self):
         resp = {"ok": True, "query": "q", "messages": {"total": 0, "matches": []}}
         assert format_response("search.messages", resp) == "No messages found."
+
+
+# === v1.3 — Slack transcription in files.info (§4.8) ===
+
+class TestFileTranscription:
+    def test_complete_transcription_rendered_with_vtt_pointer(self):
+        resp = {"ok": True, "file": {
+            "id": "F0C69E1NZBL", "name": "video.mp4", "filetype": "mp4",
+            "transcription": {"status": "complete", "locale": "en-US",
+                              "preview": {"content": "So, we sign up, we complete it.", "has_more": True}},
+            "vtt": "https://files.slack.com/files-tmb/T1-F0C69E1NZBL-x/file.vtt",
+        }}
+        out = format_response("files.info", resp)
+        assert 'transcription: complete (en-US) — "So, we sign up, we complete it.…"' in out
+        assert "vtt: available — slack_download('F0C69E1NZBL', vtt=True)" in out
+        assert "files.slack.com" not in out    # URL stays out of the render
+
+    def test_status_none_or_missing_renders_nothing(self):
+        for tr in ({"status": "none"}, None):
+            f = {"id": "F1", "name": "clip.mp4", "filetype": "mp4"}
+            if tr is not None:
+                f["transcription"] = tr
+            out = format_response("files.info", {"ok": True, "file": f})
+            assert "transcription" not in out and "vtt" not in out
+
+    def test_long_preview_capped(self):
+        f = {"id": "F1", "name": "v.mp4",
+             "transcription": {"status": "complete", "preview": {"content": "w" * 400, "has_more": False}}}
+        out = format_response("files.info", {"ok": True, "file": f})
+        assert '"' + "w" * 160 + '…"' in out

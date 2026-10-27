@@ -7,7 +7,7 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 Primary Slack integration. Replaces the official Slack plugin.
 
-Two tools, that's the whole surface (v1.2):
+Two tools, that's the whole surface (since v1.2; output contract v1.3, plugin 0.4.0):
 
 - **`slack_api(method, params, as_bot=?)`** — every Slack Web API method (200+).
 - **`slack_download(file_id, out_dir?, as_bot?)`** — file bytes to local disk (the JSON API never serves file content).
@@ -33,8 +33,10 @@ Pick the row that matches your intent. The right column is what to call.
 | React to a message | `slack_api("reactions.add", {"channel": "C...", "timestamp": "<ts>", "name": "thumbsup"}, as_bot=True)` |
 | Pin / unpin | `slack_api("pins.add" / "pins.remove", {"channel": "C...", "timestamp": "<ts>"}, as_bot=True)` |
 | Edit / delete a message | `slack_api("chat.update" / "chat.delete", {"channel": "C...", "ts": "<ts>", ...}, as_bot=?)` — `as_bot` must match the message's author token |
-| Upload a file | 3-step `files.*` flow (section below) |
+| Upload a file | `slack_api("files.uploadV2", {"file": "/abs/path", "channel": "C...", "initial_comment": "..."}, as_bot=?)` — one call (section below) |
 | Download a Slack file to local disk | `slack_download(file_id)` — the JSON API never serves file bytes |
+| Slack's own transcript of a video/clip | `files.info` shows `transcription: complete (en-US) — "…"` + `vtt: available` when Slack has one → `slack_download(file_id, vtt=True)`; otherwise download the media and use atlas-transcribe |
+| See the raw JSON (e.g. the `blocks` of a message you just sent) | add `"_raw": true` to params — `slack_api("conversations.history", {"channel": "C...", "limit": 1, "_raw": true})`; delivery checks and debugging only |
 | Set the owner's status | `slack_api("users.profile.set", {"profile": {"status_text": "...", "status_emoji": ":...:"}})` |
 | DND on/off | `slack_api("dnd.setSnooze", {"num_minutes": N})` · `slack_api("dnd.endSnooze", {})` |
 | Reminder | `slack_api("reminders.add", {"text": "...", "time": "in 2 hours"})` |
@@ -56,7 +58,7 @@ If you're reaching for `curl https://slack.com/api/...` or `security find-generi
 | `curl -H "Authorization: Bearer $TOKEN" files.slack.com/files-pri/... -o file` | `slack_download(file_id)` — auth, login-page detection, safe filename handled |
 | `security find-generic-password -s slack-user-token -w` | Unnecessary — `slack_api` resolves tokens via env, set once in `~/.zshenv` |
 
-**The only legitimate raw HTTP call** is the binary PUT to the `upload_url` returned by `files.getUploadURLExternal` (step 2 of a file upload). That is a file transfer, not a Web API call — see the file upload section below.
+File uploads are no exception: `slack_api("files.uploadV2", …)` does the binary PUT internally (section below). A hand-rolled `getUploadURLExternal` → PUT → `completeUploadExternal` sequence bypasses the write gate and the attribution — the pre-2026-10-22 incidents (a colleague one-pager 09-03, Lu memo 10-15, two colleagues SQL 10-17) all ran that way.
 
 If you're preparing a send (looking up a user, opening a DM, fetching a channel ID), stay in this skill — don't drop into bash. The preparation layer is why most sessions fall out of the MCP path; it's covered here.
 
@@ -88,8 +90,9 @@ When `as_bot=False`, `slack_api` auto-applies `:blue_heart: @Atlas` attribution 
 
 | Method | Attribution shape |
 |---|---|
-| `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` | Block Kit context block appended; long `text` auto-split into ≤3000-char sections |
-| `files.completeUploadExternal` with `initial_comment` | Text suffix on `initial_comment` |
+| `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` | Block Kit context block appended; long `text` auto-split into ≤3000-char sections, each `expand: true` (no "Show more" folds) |
+| same three (not postEphemeral) under `as_bot=True` | No attribution; `text` > 3000 chars with no caller `blocks` is auto-split the same way (since v1.3 — before, Slack cut bot posts at ~4000 chars mid-sentence) |
+| `files.uploadV2` / `files.completeUploadExternal` with `initial_comment` | Text suffix on `initial_comment` (file-share messages cannot carry blocks); `files.uploadV2` + `attribution: "block"` → comment posted separately with a context block |
 | `chat.startStream` / `chat.appendStream` / `chat.stopStream` | **Refused under user token** — streaming is bot-only, always pass `as_bot=True` |
 | Reactions, pins, reads, user-state changes (`users.profile.set`, `dnd.*`) | No injection — no recipient-facing text |
 
@@ -97,25 +100,23 @@ Bot-token calls (`as_bot=True`) never get attribution — Atlas is already the a
 
 Caller-supplied `blocks` are never rewritten; a section over 3000 chars is refused pre-flight with the offending block index (split it, or pre-check with `blocks.validate`).
 
-## File upload (the only path — 3 steps)
+## File upload — `files.uploadV2` (one call)
 
-Legacy `files.upload` is deprecated and the `slack_upload` wrapper is gone; every upload is:
+Since 2026-10-22 (UPL-002) the gateway maps `files.uploadV2` to the SDK's `files_upload_v2`, which runs `getUploadURLExternal → binary PUT → completeUploadExternal` internally. **Never do the three steps by hand** — the gateway has no tool for the PUT, and `curl`/`wget` are denied in the vault permission sets.
 
 ```python
-# 1. Get upload URL
-slack_api("files.getUploadURLExternal", {"filename": "x.md", "length": <bytes>})
-# 2. PUT file content via curl/HTTPX to the returned upload_url (this is the only
-#    bash/HTTP curl path that belongs here — it's a raw binary PUT, not a Web API call)
-# 3. Complete + share to channel/thread (attribution auto-applied to initial_comment)
-slack_api("files.completeUploadExternal", {
-    "files": [{"id": "<file_id>", "title": "..."}],
-    "channel_id": "C...",
-    "thread_ts": "...",          # optional
-    "initial_comment": "<text>",
+slack_api("files.uploadV2", {
+    "file": "/abs/path/report.pdf",   # absolute local path — or "content": "<text>" for a snippet
+    "channel": "C...",                 # a STRING — never `channels` (UPL-001: a string there is split char by char)
+    "title": "...",                    # optional; filename defaults to the path's basename
+    "thread_ts": "...",                # optional
+    "initial_comment": "<text>",       # optional; user token → :blue_heart: suffix appended
 }, as_bot=False)
 ```
 
-For a text snippet you control end-to-end, step 2 from bash: `curl -s -X POST -H "Content-Type: application/octet-stream" --data-binary @/path/to/file "<upload_url>"` (uploads to `files.slack.com` are allowed by the bash gate).
+Result: `File: <name> (ID: F…)` + `permalink` first (§4.8). Attribution under the user token is a **text suffix** on `initial_comment` (Slack's file-share message cannot carry blocks). To keep the context-block look of ordinary posts, add `"attribution": "block"`: the file is uploaded without a comment and the comment goes as a separate `chat.postMessage` (auto-split sections + context block + `<permalink|title>`) — two messages in the channel/thread, the result shows the comment's `ts`. Bot uploads (`as_bot=True`) never get attribution; the `attribution` key is ignored there.
+
+DM IDs are per-viewer: a bot upload into a DM needs the bot-side DM ID (`conversations.open` under `as_bot=True`), not the ID the owner's client shows.
 
 ## Token routing (one-liner)
 
@@ -153,7 +154,7 @@ When composing Slack messages, use mrkdwn (NOT standard Markdown):
 
 No headers (`##`), no horizontal rules (`---`), no `[text](url)` links.
 
-## Reading the output (contract v1.2)
+## Reading the output (contract v1.3)
 
 - **Errors are structural**: a failed Slack call comes back as an MCP tool error (`is_error=true`) with text `Error: <code> — <hint>`. Success text never starts with `Error:`.
 - **List responses lead with an args echo**: `» conversations.members channel=C123` — use it to match parallel responses to their calls.

@@ -82,14 +82,13 @@ Ship atomically with the plugin — no user settings.json configuration required
 - Attribution: `slack_api('chat.postMessage', ..., as_bot=False)` auto-injects `:blue_heart: <@U0BOTUSR01>` context block (2026-04-13)
 - Plugin: registered and installed
 - Hooks: `mcp-slack-gate.py` (MCP write gate) + `bash-slack-gate.py` (curl bypass blocker) — both inside plugin
-- Bot scopes: 48, User scopes: 29
-- Tests: 166 passing (+6 e2e, gated by SLACK_E2E=1)
+- Live token scopes (auth.test `x-oauth-scopes`, 2026-10-27): bot 48, user 41. **`manifest.json` in this repo has drifted** (29 user scopes in the file); the manifest is a surface shared with Verba's Socket Mode capture — reconcile it with scope reduction as a deliberate step (project.md § Strategy п. 11), not as a drive-by edit
+- Tests: 189 passing (+8 e2e, gated by SLACK_E2E=1)
 - Streams (`chat.*Stream`): bot-only policy; gate allows append/stop, asks on start (2026-08-21)
 - History output renders attachments (message shares) + file stubs — contract v1.1 (2026-08-21)
-- **v1.2 (2026-09-01):** structural errors (`is_error=true` + hint-catalogue fix), unread state in channel info, default limit=100 on history/replies, args-echo on list shapes, caller-blocks pre-validation, conversations.open gate hint, convenience wrappers removed (surface = slack_api + slack_download). See output-contract v1.2 changelog + KNOWN_ISSUES ERR-001/FMT-004..006/UPL-001/GATE-001. **MCP restart pending** — next interactive session picks up plugin 0.2.0.
+- **v1.2 (2026-09-01):** structural errors (`is_error=true` + hint-catalogue fix), unread state in channel info, default limit=100 on history/replies, args-echo on list shapes, caller-blocks pre-validation, conversations.open gate hint, convenience wrappers removed (surface = slack_api + slack_download). See output-contract v1.2 changelog + KNOWN_ISSUES ERR-001/FMT-004..006/UPL-001/GATE-001.
+- **v1.3 (2026-10-22):** `files.uploadV2` mapped to slack_sdk `files_upload_v2` — file uploads are one `slack_api` call again (UPL-002, issue #4); `attribution: "block"` option for a context-block comment. Same day (MC ask after live checks): bot-token auto-split of long `text`, `_raw: true` flag for the JSON response, Slack transcription in `files.info` + `slack_download(…, vtt=True)`. Nested params JSON-encoded + `expand: true` on auto-split sections (2026-10-20). Live sessions pick up new gateway code only when the MCP process restarts: `/mcp` → atlas-slack → Reconnect, or a session restart — **`/reload-plugins` is not enough** (MC 2026-10-22: same PID after it, `_raw` silently forwarded to Slack by the old process). The package is installed editable; the plugin cache carries only hooks/skills/.mcp.json.
 
 ## What's Next
 
-See project file for full roadmap. Immediate:
-1. Socket Mode listener (separate project phase)
-2. Migrate official Slack commands to atlas-slack tools
+Roadmap = project file (`the project file/project.md` in the Atlas vault): Vision v2.3 and Architecture v2 (2026-10-27) — policy engine, provenance + journals, library for jobs, host profile/policy. Code work starts after Strategy v2; until then only hygiene (block `chat:write.customize` params, revoke the dead webhook URL, manifest reconcile). Socket Mode is not the door's function (events belong to the communication store); official-command migration is on demand.

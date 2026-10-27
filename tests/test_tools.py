@@ -139,3 +139,31 @@ def test_download_sanitizes_filename(mock_webclient, tmp_path):
 
     (saved,) = list(tmp_path.iterdir())
     assert saved.name == "F123--my_report_v2_.pdf"
+
+
+# === v1.3 — slack_download(vtt=True) ===
+
+def test_download_vtt_transcript(mock_webclient, tmp_path):
+    mock_webclient.files_info.return_value = {"ok": True, "file": {
+        "id": "F1", "name": "video.mp4", "mimetype": "video/mp4",
+        "url_private_download": "https://files.slack.com/files-pri/T1-F1/download/video.mp4",
+        "transcription": {"status": "complete", "locale": "en-US"},
+        "vtt": "https://files.slack.com/files-tmb/T1-F1-x/file.vtt?_xcb=1",
+    }}
+    with patch("atlas_slack.tools.httpx.get", return_value=_http_response(content=b"WEBVTT\n\n00:00.000 --> 00:01.000\nhi\n", content_type="text/vtt")) as get:
+        out = slack_download("F1", out_dir=str(tmp_path), vtt=True)
+    assert get.call_args.args[0].endswith("file.vtt?_xcb=1")
+    assert "Downloaded transcript: video.vtt (ID: F1)" in out
+    assert (tmp_path / "F1--video.vtt").read_bytes().startswith(b"WEBVTT")
+    assert "text/vtt" in out
+
+
+def test_download_vtt_absent_is_structural(mock_webclient, tmp_path):
+    mock_webclient.files_info.return_value = {"ok": True, "file": {
+        "id": "F1", "name": "clip.mp4", "url_private": "https://files.slack.com/x",
+        "transcription": {"status": "none"},
+    }}
+    with patch("atlas_slack.tools.httpx.get") as get:
+        with pytest.raises(ToolError, match="no_transcript.*status: none"):
+            slack_download("F1", out_dir=str(tmp_path), vtt=True)
+    get.assert_not_called()

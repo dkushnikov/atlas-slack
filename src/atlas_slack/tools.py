@@ -36,7 +36,7 @@ def _safe_filename(name: str) -> str:
 
 
 @mcp.tool()
-def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False) -> str:
+def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False, vtt: bool = False) -> str:
     """Download a Slack file to local disk.
 
     Fetches metadata via files.info, then GETs url_private_download (fallback:
@@ -50,6 +50,9 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False) -> str
         out_dir: Directory to save into. Default: ~/Downloads/slack (created if missing).
         as_bot: If True, download with the bot token (file must be visible to Atlas).
                 If False (default), use the owner's user token (broadest file visibility).
+        vtt: If True, download Slack's own transcript of a video/clip (WebVTT) instead
+             of the media — files.info shows `transcription: complete` and `vtt: available`
+             when one exists. Saved as "{file_id}--{name}.vtt".
     """
     try:
         client = get_client(as_bot=as_bot)
@@ -57,7 +60,17 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False) -> str
         if not info.get("ok", True):
             raise ToolError(format_error(info.get("error") or "unknown_error"))
         f = info.get("file") or {}
-        url = f.get("url_private_download") or f.get("url_private")
+        if vtt:
+            url = f.get("vtt")
+            if not url:
+                status = (f.get("transcription") or {}).get("status") if isinstance(f.get("transcription"), dict) else None
+                raise ToolError(format_error(
+                    "no_transcript",
+                    f"files.info for {file_id} has no vtt (transcription status: {status or 'none'}) — "
+                    "Slack has not transcribed this media; use atlas-transcribe on the downloaded file",
+                ))
+        else:
+            url = f.get("url_private_download") or f.get("url_private")
         if not url:
             raise ToolError(format_error(
                 "no_download_url",
@@ -85,12 +98,14 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False) -> str
         target_dir = Path(out_dir).expanduser() if out_dir else Path.home() / "Downloads" / "slack"
         target_dir.mkdir(parents=True, exist_ok=True)
         name = f.get("name") or file_id
+        if vtt:
+            name = f"{Path(name).stem}.vtt"
         path = target_dir / f"{file_id}--{_safe_filename(name)}"
         path.write_bytes(resp.content)
 
-        mimetype = f.get("mimetype") or content_type or "?"
+        mimetype = "text/vtt" if vtt else (f.get("mimetype") or content_type or "?")
         return "\n".join([
-            f"Downloaded: {name} (ID: {file_id})",
+            f"Downloaded{' transcript' if vtt else ''}: {name} (ID: {file_id})",
             f"  path: {path}",
             f"  type: {mimetype}, size: {_human_size(len(resp.content))}",
         ])
