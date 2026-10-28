@@ -840,3 +840,43 @@ class TestFileTranscription:
              "transcription": {"status": "complete", "preview": {"content": "w" * 400, "has_more": False}}}
         out = format_response("files.info", {"ok": True, "file": f})
         assert '"' + "w" * 160 + '…"' in out
+
+
+# === v1.4: FMT-007 search matches keep channel + permalink; FMT-008 empty page keeps cursor ===
+
+class TestSearchMatchSource:
+    def test_search_match_renders_channel_and_permalink(self):
+        resp = {"ok": True, "messages": {"total": 1, "matches": [{
+            "ts": "1700000000.000100", "user": "U1", "text": "deploy done",
+            "channel": {"id": "C0INCIDENT", "name": "incidents"},
+            "permalink": "https://example.slack.com/archives/C0INCIDENT/p1700000000000100"}]}}
+        out = format_response("search.messages", resp)
+        assert "[1700000000.000100] <U1> in #incidents (C0INCIDENT)" in out
+        assert "permalink: https://example.slack.com/archives/C0INCIDENT/p1700000000000100" in out
+
+    def test_search_match_in_dm_has_no_hash(self):
+        resp = {"ok": True, "messages": {"matches": [{
+            "ts": "1.1", "user": "U1", "text": "x", "channel": {"id": "D0DM", "name": "U2", "is_im": True}}]}}
+        assert "in U2 (D0DM)" in format_response("search.messages", resp)
+
+    def test_history_without_channel_unchanged(self):
+        resp = {"ok": True, "messages": [{"ts": "1.1", "user": "U1", "text": "x"}]}
+        out = format_response("conversations.history", resp)
+        assert " in " not in out.split("\n")[1] and "permalink" not in out
+
+
+class TestEmptyPageCursor:
+    def test_empty_history_page_keeps_cursor(self):
+        resp = {"ok": True, "messages": [], "has_more": True,
+                "response_metadata": {"next_cursor": "bmV4dA=="}}
+        out = format_response("conversations.history", resp, req_params={"channel": "C1"})
+        assert "next_cursor=bmV4dA==" in out
+        assert "No messages found." not in out
+
+    def test_empty_page_without_cursor_unchanged(self):
+        assert format_response("conversations.history", {"ok": True, "messages": []}) == "No messages found."
+
+    def test_empty_channel_and_user_pages_keep_cursor(self):
+        meta = {"response_metadata": {"next_cursor": "abc"}}
+        assert "next_cursor=abc" in format_response("conversations.list", {"ok": True, "channels": [], **meta})
+        assert "next_cursor=abc" in format_response("users.list", {"ok": True, "members": [], **meta})

@@ -274,3 +274,46 @@ The gate's ask-text for `conversations.open` was the generic `Slack write: conve
 
 - UPL-001 (wrapper removal), ATT-001 (suffix vs block by method)
 - Ledger of the incident: MC vault `notes/comms/2026-09-03--colleague--post-boosting-one-pager.md`
+
+## FMT-007 — search.messages output drops `channel` and `permalink` of each match
+
+**Severity:** Medium · **Status:** Resolved on branch `feat/v2-core` (contract v1.4, not installed) · **Reported:** 2026-10-28 (Codex review, reproduced on the formatter with a synthetic response) · **Fix:** with the v2 read path (project.md § Strategy п. 17)
+
+### Symptom
+`format_response("search.messages", …)` renders `[ts] <user>` + text only; the match's `channel` (id/name) and `permalink` are not in the output, so the agent cannot follow a hit to its source thread without a second guess. The skill's own rule «search = discovery only → `conversations.replies` for the body» depends on exactly these two fields.
+
+### Resolution (2026-10-28, branch `feat/v2-core`, contract v1.4)
+Each match renders `in #<name> (<id>)` first in its meta line (DM/MPIM without `#`) and a `permalink:` line after the text; history items without a `channel` are unchanged. Tests: `tests/test_formatters.py::TestSearchMatchSource`. The library `read_scope` runs on the request before any call. A post-filter over search results is not built: `search.*` under a read scope refuses `read_scope_violation`.
+
+## FMT-008 — empty page hides a non-empty `next_cursor`
+
+**Severity:** Low · **Status:** Resolved on branch `feat/v2-core` (contract v1.4, not installed) · **Reported:** 2026-10-28 (Codex review, reproduced) · **Fix:** with FMT-007
+
+### Symptom
+A `conversations.history`/`replies` page with `messages: []` but `has_more: true` and a `response_metadata.next_cursor` renders as «No messages found.» — the cursor is dropped, pagination silently ends. Slack returns such pages (filters, deleted messages, tombstones).
+
+### Resolution (2026-10-28, branch `feat/v2-core`, contract v1.4)
+An empty page with a cursor renders `0 <items> on this page next_cursor=<c> — more remain; continue with this cursor.` for message, channel, member, user, file and pin lists. With no cursor it stays `No <items> found.`. Tests: `tests/test_formatters.py::TestEmptyPageCursor`.
+
+## GATE-002 — identity overrides (`username`, `icon_emoji`, `icon_url`) are forwarded unfiltered
+
+**Severity:** High (identity) · **Status:** Resolved on branch `feat/v2-core` (not installed) · **Reported:** 2026-10-28 (Codex review; confirmed by code read — no filtering in `gateway.py`; the live bot token carries `chat:write.customize`) · **Fix:** first v2 slice (project.md § Strategy п. 16–17), invariant (vii)
+
+### Symptom
+A `chat.postMessage` with `username`/`icon_*` under the bot token would post under an arbitrary display identity. Nothing in the gateway or the gate refuses it.
+
+### Resolution (2026-10-28, branch `feat/v2-core`)
+The policy engine refuses `username` / `icon_emoji` / `icon_url` on **every** write with `identity_override` (invariant vii). The hook denies the call, and the MCP server refuses it again if it arrives anyway, on the core and the transitional path alike. Tests: `tests/test_v2_slice.py::test_15_identity_overrides_never_reach_slack` asserts the mock client is never called for chat.postMessage / update / scheduleMessage / postEphemeral. Still open: drop `chat:write.customize` from the app at the next scope review (manifest is co-owned with the communication store).
+
+## GATE-003 — read classification by name prefix/suffix, not by effect
+
+**Severity:** Medium · **Status:** Partially resolved on branch `feat/v2-core` (not installed) · **Reported:** 2026-10-28 (Codex review; `is_read("auth.futureMutation") == True` with a made-up name, `users.lookupByEmail` / `users.getPresence` ask) · **Fix:** v2 policy engine (effect-based allow-list, unknown write → strictest row or refuse)
+
+### Symptom
+`mcp-slack-gate.py` auto-allows any future `auth.*`/`search.*`/`team.*`/`emoji.*` name and any name ending in `.list/.info/.get/…`, while asking on genuine reads such as `users.lookupByEmail`, `users.getPresence`, `chat.getPermalink`. The classifier is a convenience heuristic, not a registry of supported effects.
+
+### Resolution (2026-10-28, branch `feat/v2-core`) — partial
+- An explicit registry lives in `src/atlas_slack/policy.py`. `READ_METHODS` are row 0 and include `users.lookupByEmail`, `users.getPresence`, `chat.getPermalink`, `chat.scheduledMessages.list`, and `conversations.open` with `prevent_creation=true` and one user. `chat.postMessage` is row 1/2 through the core. `conversations.open` otherwise is row 4 and asks with the GATE-001 text. `auth.revoke` refuses: it matched `auth.` and was **auto-allowed** in 0.4.0. Known writes carry their A3 row.
+- The hook is a thin adapter over `atlas_slack.gate`.
+- **Partial, deliberately:** names outside the registry still pass through the legacy prefix/suffix heuristic, but only on the *transitional* path, and the verdict says so (`auth.futureMutation` is still allowed, flagged `transitional_read`). An unregistered write asks with "transitional" in the prompt, as in 0.4.0. Making unregistered writes refuse is the cutover step after the matrix covers the remaining rows (Strategy п. 15).
+

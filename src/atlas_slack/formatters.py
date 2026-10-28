@@ -241,6 +241,28 @@ def _message_extras(item: dict) -> list[str]:
 
 # === Shape handlers ===
 
+def _empty(label: str, cursor: str) -> str:
+    """Empty list body. A non-empty cursor is never dropped (FMT-008, v1.4):
+    Slack returns empty pages with `has_more` (filters, tombstones) — without the
+    cursor the caller would read "nothing left" and stop paginating."""
+    if not cursor:
+        return f"No {label} found."
+    return f"0 {label} on this page next_cursor={cursor} — more remain; continue with this cursor."
+
+
+def _match_channel(item: dict) -> str:
+    """`in #name (id)` for a search match / message that carries its channel (FMT-007, v1.4)."""
+    ch = item.get("channel")
+    if isinstance(ch, dict):
+        cid, name = ch.get("id") or "", ch.get("name") or ""
+        if name and cid:
+            return f"in #{name} ({cid})" if not ch.get("is_im") and not ch.get("is_mpim") else f"in {name} ({cid})"
+        return f"in {cid or name}" if (cid or name) else ""
+    if isinstance(ch, str) and ch:
+        return f"in {ch}"
+    return ""
+
+
 def _h_single_message(method: str, c: dict, cursor: str) -> str:
     """§4.1 — chat.postMessage / update / scheduleMessage / postEphemeral."""
     msg = c.get("message")
@@ -270,7 +292,7 @@ def _h_message_list(method: str, c: dict, cursor: str) -> str:
     if isinstance(items, dict):
         items = items.get("matches") or []
     if not items:
-        return "No messages found."
+        return _empty("messages", cursor)
 
     cap = LIST_CAPS["messages"]
     header = f"{len(items)} messages"
@@ -298,10 +320,15 @@ def _h_message_list(method: str, c: dict, cursor: str) -> str:
         agg = _aggregate_reactions(reactions)
         if agg:
             meta.append(agg)
+        where = _match_channel(item)
+        if where:
+            meta.insert(0, where)
         meta_str = (" " + " ".join(meta)) if meta else ""
 
         lines.append(f"  [{ts}] <{user}>{meta_str}")
         lines.append(f"  {text}")
+        if item.get("permalink"):
+            lines.append(f"  permalink: {item['permalink']}")
         lines.extend(_message_extras(item))
 
     if len(items) > cap:
@@ -363,7 +390,7 @@ def _h_channel_list(method: str, c: dict, cursor: str) -> str:
     items = c.get("channels") or c.get("members") or []
     is_members = "channels" not in c
     if not items:
-        return "No channels found." if not is_members else "No members found."
+        return _empty("members" if is_members else "channels", cursor)
 
     # conversations.members returns list of user-ID strings, not dicts
     if items and isinstance(items[0], str):
@@ -462,7 +489,7 @@ def _h_user_list(method: str, c: dict, cursor: str) -> str:
     """§4.7 — users.list."""
     items = c.get("members") or c.get("users") or []
     if not items:
-        return "No users found."
+        return _empty("users", cursor)
 
     cap = LIST_CAPS["users"]
     header = f"{len(items)} users"
@@ -554,7 +581,7 @@ def _h_file_list(method: str, c: dict, cursor: str) -> str:
     """§4.9 — files.list / files.uploadV2 (multi)."""
     items = c.get("files") or []
     if not items:
-        return "No files found."
+        return _empty("files", cursor)
 
     cap = LIST_CAPS["files"]
     header = f"{len(items)} files"
@@ -661,7 +688,7 @@ def _h_pin_list(method: str, c: dict, cursor: str) -> str:
     """§4.12 — pins.list / stars.list (both use `items` key)."""
     items = c.get("items") or c.get("pins") or []
     if not items:
-        return "No pins found."
+        return _empty("pins", cursor)
 
     cap = LIST_CAPS["pins"]
     header = f"{len(items)} pins"

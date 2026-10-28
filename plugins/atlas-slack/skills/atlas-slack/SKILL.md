@@ -5,9 +5,9 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 # atlas-slack — Slack API for Atlas
 
-Primary Slack integration. Replaces the official Slack plugin.
+Primary Slack integration for agent sessions. Coexists with the official Slack plugin/MCP (decision 2026-08-21: no migration; the official one covers canvas and semantic search, this one covers the full Web API, two voices, attribution and the write gate).
 
-Two tools, that's the whole surface (since v1.2; output contract v1.3, plugin 0.4.0):
+Two tools, that's the whole surface (since v1.2; output contract v1.4 on branch `feat/v2-core`, plugin 0.4.0):
 
 - **`slack_api(method, params, as_bot=?)`** — every Slack Web API method (200+).
 - **`slack_download(file_id, out_dir?, as_bot?)`** — file bytes to local disk (the JSON API never serves file content).
@@ -92,7 +92,7 @@ When `as_bot=False`, `slack_api` auto-applies `:blue_heart: @Atlas` attribution 
 |---|---|
 | `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` | Block Kit context block appended; long `text` auto-split into ≤3000-char sections, each `expand: true` (no "Show more" folds) |
 | same three (not postEphemeral) under `as_bot=True` | No attribution; `text` > 3000 chars with no caller `blocks` is auto-split the same way (since v1.3 — before, Slack cut bot posts at ~4000 chars mid-sentence) |
-| `files.uploadV2` / `files.completeUploadExternal` with `initial_comment` | Text suffix on `initial_comment` (file-share messages cannot carry blocks); `files.uploadV2` + `attribution: "block"` → comment posted separately with a context block |
+| `files.uploadV2` / `files.completeUploadExternal` with `initial_comment` | Text suffix on `initial_comment` (file-share messages cannot carry blocks); `attribution: "block"` is refused since the v2 core slice (`composite_not_in_slice`) |
 | `chat.startStream` / `chat.appendStream` / `chat.stopStream` | **Refused under user token** — streaming is bot-only, always pass `as_bot=True` |
 | Reactions, pins, reads, user-state changes (`users.profile.set`, `dnd.*`) | No injection — no recipient-facing text |
 
@@ -114,13 +114,24 @@ slack_api("files.uploadV2", {
 }, as_bot=False)
 ```
 
-Result: `File: <name> (ID: F…)` + `permalink` first (§4.8). Attribution under the user token is a **text suffix** on `initial_comment` (Slack's file-share message cannot carry blocks). To keep the context-block look of ordinary posts, add `"attribution": "block"`: the file is uploaded without a comment and the comment goes as a separate `chat.postMessage` (auto-split sections + context block + `<permalink|title>`) — two messages in the channel/thread, the result shows the comment's `ts`. Bot uploads (`as_bot=True`) never get attribution; the `attribution` key is ignored there.
+Result: `File: <name> (ID: F…)` + `permalink` first (§4.8). Attribution under the user token is a **text suffix** on `initial_comment` (Slack's file-share message cannot carry blocks). `"attribution": "block"` (v1.3: comment as a separate attributed post) is **refused** on the v2 core branch with `composite_not_in_slice` — that second post would bypass the per-send approval and journal. For the context-block look, upload without `initial_comment`, then send the comment with `chat.postMessage` (its own approval). Bot uploads (`as_bot=True`) never get attribution; the `attribution` key is ignored there.
 
 DM IDs are per-viewer: a bot upload into a DM needs the bot-side DM ID (`conversations.open` under `as_bot=True`), not the ID the owner's client shows.
 
 ## Token routing (one-liner)
 
-Reads → user token. Writes → `as_bot` flag picks bot or user. All writes gated by the plugin's internal PreToolUse hook (`hooks/mcp-slack-gate.py`) requiring user confirmation. `conversations.open` is a **write** (it creates the DM/MPIM); to look up existing conversations use `users.conversations` (read, auto-allowed).
+Reads → user token. Writes → `as_bot` flag picks bot or user. All writes gated by the plugin's internal PreToolUse hook (`hooks/mcp-slack-gate.py`) — a thin adapter over the door's policy engine. `conversations.open` is a **write** (it creates the DM/MPIM); to look up an existing DM use `users.conversations`, or `conversations.open` with `"prevent_creation": true` and exactly one user (row 0, auto-allowed; returns "not found" instead of creating).
+
+## Sending a message — v2 core (contract v1.4)
+
+`chat.postMessage` goes through the door's core: policy → provenance → your human's decision → journal (written **before** the send) → Slack. Every other write still runs on the labelled *transitional* path (today's ask).
+
+- Pass `provenance` when you know it: `{"cls": "B-h", "comm_id": "...", "checks": {"recipient": "...", "voice": "..."}, "sources": ["..."]}` — `cls` `B-h` = bot voice (`as_bot=True`), `A` = the person's voice (`as_bot=False`). Without provenance the send still asks, with a "provenance missing" warning (migration rule).
+- The approval prompt shows class, voice, recipient, policy row, declared checks and the text. The approval covers **that exact operation**: change text, channel, thread, any param or the voice and the door refuses `decision_mismatch` — ask again instead of editing after approval.
+- One approval = one send. A repeat refuses `decision_already_used`; the same `comm_id` again refuses `duplicate_comm_id` unless you pass `"resend": true` and get a fresh approval.
+- A result line `journal: op <id> ok` names the journal row. `Error: outcome_unknown` means the post may or may not exist — check the channel history before anything else; **never retry blindly**.
+- Refusals before any Slack call: `frozen` (profile freeze), `policy_invalid`, `journal_unavailable`, `identity_override` (`username`/`icon_emoji`/`icon_url` are never allowed), `not_enabled_by_policy` (autonomous classes B-a/C1/C2 are off by default), `recipient_denied`, `ttl_expired`, `attribution_unavailable` (profile lacks `bot_user_id`).
+- `slack_api("_rights")` prints what this host may do right now — capabilities × class × policy. Use it when a refusal surprises you.
 
 ## Search modifiers for `search.messages`
 
@@ -154,11 +165,12 @@ When composing Slack messages, use mrkdwn (NOT standard Markdown):
 
 No headers (`##`), no horizontal rules (`---`), no `[text](url)` links.
 
-## Reading the output (contract v1.3)
+## Reading the output (contract v1.4)
 
 - **Errors are structural**: a failed Slack call comes back as an MCP tool error (`is_error=true`) with text `Error: <code> — <hint>`. Success text never starts with `Error:`.
 - **List responses lead with an args echo**: `» conversations.members channel=C123` — use it to match parallel responses to their calls.
-- `conversations.history` / `replies` default to `limit=100` when you pass none; the header shows `next_cursor=...` when more pages exist.
+- `conversations.history` / `replies` default to `limit=100` when you pass none; the header shows `next_cursor=...` when more pages exist — also on an empty page (`0 messages on this page next_cursor=…` → keep paginating).
+- `search.messages` matches show `in #channel (C…)` and a `permalink:` line — follow them to `conversations.replies` for the full thread.
 - `conversations.info` includes unread state when Slack provides it: `last_read: <ts>`, `unread: N (M display)`. DMs render as `Channel: DM with U... (ID: D...)`.
 - Messages render as `[timestamp] <user_id>` + text, then any extras the message carries:
   - `↳ [shared message] <author> <permalink>` + quoted text — a forwarded Slack message (full body, nothing truncated)

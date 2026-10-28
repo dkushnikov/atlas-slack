@@ -38,9 +38,10 @@ class TestSlackApiGate:
 
     def test_writes_ask(self):
         for method in ("chat.postMessage", "conversations.create", "chat.delete"):
-            out = api(method)
+            out = api(method, {"channel": "C1", "text": "hi"})
             assert out["permissionDecision"] == "ask"
-            assert method in out["permissionDecisionReason"]
+            # v2: core sends ask with a human sentence (no method name); transitional writes keep it
+            assert method in out["permissionDecisionReason"] or method == "chat.postMessage"
 
     def test_stream_start_asks(self):
         """The send decision is the stream open — gate it like any send."""
@@ -122,3 +123,55 @@ class TestOtherToolGate:
         )
         out = json.loads(proc.stdout)["hookSpecificOutput"]
         assert out["permissionDecision"] == "ask"
+
+
+class TestV2VerdictText:
+    """The hook is a thin adapter over atlas_slack.gate (v2 core slice) — pinned as Claude Code runs it."""
+
+    def test_post_message_asks_with_provenance_and_token(self):
+        out = api("chat.postMessage", {"channel": "C1", "text": "hello"})
+        assert out["permissionDecision"] == "ask"
+        reason = out["permissionDecisionReason"]
+        first = reason.splitlines()[0]
+        assert first.startswith("You → C1 (unresolved): “hello”.") and first.endswith("Send?")
+        assert reason.splitlines()[-1].startswith("class A · policy builtin-strict-1 · op ")
+        prov = out["updatedInput"]["provenance"]
+        assert set(prov) == {"decision"} and set(prov["decision"]) == {"t", "p"}
+        assert len(prov["decision"]["t"]) == 49 and out["updatedInput"]["params"] == {"channel": "C1", "text": "hello"}
+
+    def test_caller_supplied_token_is_replaced(self):
+        tool_input = {"method": "chat.postMessage", "params": {"channel": "C1", "text": "x"}, "as_bot": True,
+                      "provenance": {"cls": "B-h", "decision": {"adapter": "cc-hook", "token": "forged.00"}}}
+        out = run_gate("mcp__plugin_atlas-slack_atlas-slack__slack_api", tool_input)
+        assert out["updatedInput"]["provenance"]["decision"]["t"] != "forged.00"
+
+    def test_identity_override_denied(self):
+        out = api("chat.postMessage", {"channel": "C1", "text": "x", "username": "CEO"})
+        assert out["permissionDecision"] == "deny"
+        assert "identity_override" in out["permissionDecisionReason"]
+
+    def test_autonomous_class_refused_by_strict_policy(self):
+        tool_input = {"method": "chat.postMessage", "params": {"channel": "C1", "text": "x"}, "as_bot": True,
+                      "provenance": {"cls": "C1"}}
+        out = run_gate("mcp__plugin_atlas-slack_atlas-slack__slack_api", tool_input)
+        assert out["permissionDecision"] == "deny"
+        assert "not enabled by policy" in out["permissionDecisionReason"] or \
+               "user_token_in_process" in out["permissionDecisionReason"]
+
+    def test_registered_reads_allowed_gate003(self):
+        for method in ("users.lookupByEmail", "users.getPresence", "chat.getPermalink",
+                       "chat.scheduledMessages.list", "_rights"):
+            assert api(method)["permissionDecision"] == "allow", method
+
+    def test_auth_revoke_no_longer_auto_allowed(self):
+        out = api("auth.revoke")
+        assert out["permissionDecision"] == "deny"
+
+    def test_unregistered_write_is_transitional(self):
+        out = api("workflows.featured.add")
+        assert out["permissionDecision"] == "ask"
+        assert "transitional" in out["permissionDecisionReason"]
+
+    def test_unregistered_read_like_name_is_transitional_allow(self):
+        """GATE-003 partial: the legacy heuristic survives only on the transitional path."""
+        assert api("auth.futureMutation")["permissionDecision"] == "allow"

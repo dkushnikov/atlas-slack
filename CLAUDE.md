@@ -16,7 +16,7 @@ Two tokens, two roles:
 - `SLACK_USER_TOKEN` (xoxp-) — read operations: search, history, profiles, DMs
 - `SLACK_BOT_TOKEN` (xoxb-) — write operations: messages, reactions, pins (appears as "Atlas" 💙)
 
-User token messages get `💙 @Atlas` Block Kit footer (context block).
+User token messages get `💙 @Atlas` Block Kit footer (context block). The attributed bot id comes from the profile (`bot_user_id`) or `ATLAS_BOT_USER_ID`; on branch `feat/v2-core` there is no default in code.
 
 ## Development
 
@@ -27,6 +27,10 @@ cd <repo> && python3 -m atlas_slack
 # Run tests
 cd <repo> && python3 -m pytest tests/
 
+# Run tests from a worktree (the package is editable-installed from the main
+# checkout — without PYTHONPATH the tests import the installed copy, not yours)
+PYTHONPATH=<worktree>/src python3 -m pytest <worktree>/tests -q
+
 # Validate plugin
 claude plugin validate <repo>
 
@@ -34,6 +38,10 @@ claude plugin validate <repo>
 claude plugin marketplace update atlas-slack   # re-scan directory source
 claude plugin update atlas-slack@atlas-slack   # then restart session to apply
 ```
+
+## Plugin layout (feat/v2-core)
+
+`plugins/atlas-slack/.claude-plugin/plugin.json` — the single manifest, hooks inline (bare event map) · `hooks/*.py` (the two gate scripts) · `.mcp.json` · `skills/atlas-slack/SKILL.md`. Two loaders read plugins differently: the marketplace install loaded the hooks from the old root-level `plugin.json` (hook events in MC transcripts since July), the `--plugin-dir` loader ignored that file (`plugin details` → `Hooks (0)`, `Skills (0)` for the flat skill file). After any layout change check both: `claude plugin validate plugins/atlas-slack`, `claude --plugin-dir plugins/atlas-slack plugin details atlas-slack` → Hooks (1) · Skills (1) · MCP servers (1), and after install `claude plugin details atlas-slack@atlas-slack` from the MC vault → Hooks (1) · Skills (1).
 
 ## Plugin Process
 
@@ -62,7 +70,7 @@ Each machine needs its own `~/.zshenv`. For distributed setup, server gets only 
 
 Two PreToolUse hooks, both shipped inside the plugin at `plugins/atlas-slack/hooks/`:
 
-- **`mcp-slack-gate.py`** — matcher `mcp__plugin_atlas-slack`. Gates MCP tool calls. Reads (search.*, auth.*, *.list, *.info, *.history, *.get, *.members, *.replies, *.test, dnd.info, reminders.list, users.conversations, etc.) → auto-allow. Writes (all non-read slack_api methods) → ask user confirmation; conversations.open asks with a creates-DM/MPIM warning.
+- **`mcp-slack-gate.py`** — matcher `mcp__plugin_atlas-slack`. Gates MCP tool calls. (On `feat/v2-core` it is a thin adapter over `atlas_slack.gate`; the text below describes 0.4.0 on main. The v2 hook imports the package — `slack_sdk` and `yaml` must be importable by plain `python3`; if the import fails, the hook **asks on every call, reads included** ("atlas-slack gate unavailable"), it never silently allows. It prefers the checkout's `src/` when it runs from a source tree. Profile resolution must match between hook and MCP server: both read `ATLAS_SLACK_PROFILE` from their inherited environment — set it in the shell or in the project's `.claude/settings.json` env, never in `.mcp.json` (`${VAR}` there reads only the shell and would override the inherited value with an empty one); a divergence refuses `profile_mismatch`.) Reads (search.*, auth.*, *.list, *.info, *.history, *.get, *.members, *.replies, *.test, dnd.info, reminders.list, users.conversations, etc.) → auto-allow. Writes (all non-read slack_api methods) → ask user confirmation; conversations.open asks with a creates-DM/MPIM warning.
 - **`bash-slack-gate.py`** — matcher `Bash`. Blocks raw `curl slack.com/api/*` and `security find-generic-password ... slack` with message pointing at `slack_api`. Allows legitimate binary uploads to `files.slack.com`.
 
 Ship atomically with the plugin — no user settings.json configuration required. The earlier external `<atlas>/bin/slack-gate.{sh,py}` was removed 2026-04-14 (replaced by these plugin-internal hooks).
@@ -76,6 +84,8 @@ Ship atomically with the plugin — no user settings.json configuration required
 - **Icon:** `atlas-icon.jpg` in this repo
 
 ## Current State
+
+- **v2 core slice on branch `feat/v2-core` (not installed, 2026-10-28).** `chat.postMessage` runs through the core: profile, policy, provenance, a one-time decision via the hook's `updatedInput`, and a write-ahead SQLite journal. Reads go through the registry. `conversations.open` is split by effect. Every other write is on the labelled transitional path. Also on the branch: the library `atlas_slack.door.Door`, the gate CLI `python3 -m atlas_slack.gate`, `slack_api("_rights")`, and fixes for GATE-002, FMT-007 and FMT-008. Plan, decisions and the morning live-check steps: `docs/plans/2026-10-28-v2-core-slice.md`. Schema: `docs/policy-schema.md`. Contract v1.4. **Before installing it**, give the default profile a `bot_user_id`, because the `U0BOTUSR01` fallback is gone. Either create `~/.config/atlas-slack/default.yaml` or export `ATLAS_BOT_USER_ID`; otherwise person-voice sends refuse `attribution_unavailable`.
 
 - Dual tokens: working (verified 2026-04-09)
 - MCP server: **dual-token** via `get_client(as_bot=...)`; write-as-Atlas tools route to bot, user-state tools (set_status, dnd, remind) stay user (2026-04-13)

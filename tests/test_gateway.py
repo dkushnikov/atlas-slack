@@ -6,8 +6,32 @@ import pytest
 from fastmcp.exceptions import ToolError
 from slack_sdk.errors import SlackApiError
 
-from atlas_slack.gateway import slack_api, SECTION_TEXT_LIMIT
-from atlas_slack.client import ATLAS_BOT_USER_ID
+from atlas_slack.gate import hook_output
+from atlas_slack.gateway import SECTION_TEXT_LIMIT
+from atlas_slack.gateway import slack_api as _slack_api_server
+
+TOOL = "mcp__plugin_atlas-slack_atlas-slack__slack_api"
+
+
+def slack_api(method, params=None, as_bot=False, provenance=None):
+    """The production route: PreToolUse hook (verdict + one-time decision) → MCP server.
+
+    Since the v2 core slice chat.postMessage executes only with a decision the
+    hook issued for exactly this operation; the 0.4.0 shaping tests below run
+    through that route unchanged. Other methods go straight to the server, as
+    before (the hook's ask is the human's, not the server's).
+    """
+    if method != "chat.postMessage":
+        return _slack_api_server(method, params, as_bot)
+    tool_input = {"method": method, "params": params or {}, "as_bot": as_bot}
+    if provenance is not None:
+        tool_input["provenance"] = provenance
+    out = hook_output({"tool_name": TOOL, "tool_input": tool_input, "session_id": "test"})["hookSpecificOutput"]
+    if out["permissionDecision"] == "deny":
+        raise ToolError(out["permissionDecisionReason"])
+    assert out["permissionDecision"] == "ask", out
+    return _slack_api_server(**out["updatedInput"])
+from conftest import TEST_BOT_USER_ID as ATLAS_BOT_USER_ID
 
 
 def test_slack_api_calls_method(mock_webclient):
@@ -528,75 +552,10 @@ def test_upload_v2_bot_mode_untouched(mock_webclient):
     mock_webclient.api_call.assert_not_called()   # bot: no second message
 
 
-def test_upload_v2_block_attribution_posts_separate_message(mock_webclient):
-    """attribution='block' (user mode): upload without the comment, then one
-    chat.postMessage carrying the comment, <permalink|title> and the context block."""
-    mock_webclient.files_upload_v2.return_value = {
-        "ok": True,
-        "files": [{"id": "F1", "name": "doc.pdf", "permalink": "https://x.slack.com/F1"}],
-    }
-    mock_webclient.api_call.return_value = {"ok": True, "ts": "9.9", "channel": "C1"}
-    result = slack_api(
-        "files.uploadV2",
-        {"content": "x", "channel": "C1", "thread_ts": "1.1", "title": "The Doc",
-         "initial_comment": "see attached", "attribution": "block"},
-    )
-    up = mock_webclient.files_upload_v2.call_args.kwargs
-    assert "initial_comment" not in up and "attribution" not in up
-    assert up["thread_ts"] == "1.1"
-
-    mock_webclient.api_call.assert_called_once()
-    method, = mock_webclient.api_call.call_args.args
-    post = mock_webclient.api_call.call_args.kwargs["params"]
-    assert method == "chat.postMessage"
-    assert post["channel"] == "C1" and post["thread_ts"] == "1.1"
-    assert "<https://x.slack.com/F1|The Doc>" in post["text"]
-    blocks = json.loads(post["blocks"])
-    assert blocks[0]["text"]["text"].startswith("see attached")
-    assert blocks[-1]["type"] == "context"
-    assert ATLAS_BOT_USER_ID in blocks[-1]["elements"][0]["text"]
-    assert "https://x.slack.com/F1" in result
-    assert "ts=9.9" in result
-
-
-def test_upload_v2_block_attribution_needs_channel(mock_webclient):
-    with pytest.raises(ToolError, match="needs `channel`"):
-        slack_api("files.uploadV2", {"content": "x", "initial_comment": "c", "attribution": "block"})
-    mock_webclient.files_upload_v2.assert_not_called()
-
-
 def test_upload_v2_sdk_error_is_structural(mock_webclient):
     mock_webclient.files_upload_v2.side_effect = SlackApiError("boom", {"ok": False, "error": "not_in_channel"})
     with pytest.raises(ToolError, match="not_in_channel"):
         slack_api("files.uploadV2", {"content": "x", "channel": "C1"}, as_bot=True)
-
-
-def test_upload_v2_block_mode_comment_failure_names_uploaded_file(mock_webclient):
-    """Upload succeeded, comment post failed: the error must say the file is already
-    in Slack and steer the retry to chat.postMessage (verifier gap, 2026-10-22)."""
-    mock_webclient.files_upload_v2.return_value = {
-        "ok": True, "files": [{"id": "F1", "name": "doc.pdf", "permalink": "https://x.slack.com/F1"}],
-    }
-    mock_webclient.api_call.side_effect = SlackApiError("boom", {"ok": False, "error": "not_in_channel"})
-    with pytest.raises(ToolError) as exc_info:
-        slack_api("files.uploadV2", {"content": "x", "channel": "C1",
-                                     "initial_comment": "c", "attribution": "block"})
-    msg = str(exc_info.value)
-    assert msg.startswith("Error: not_in_channel")
-    assert "conversations.invite" in msg            # catalogue hint kept
-    assert "file F1 is already uploaded (https://x.slack.com/F1)" in msg
-    assert "retry with chat.postMessage" in msg
-    mock_webclient.files_upload_v2.assert_called_once()
-
-    # Non-Slack failure (network) on the comment post — same steering.
-    mock_webclient.files_upload_v2.reset_mock()
-    mock_webclient.api_call.side_effect = RuntimeError("connection reset")
-    with pytest.raises(ToolError) as exc_info:
-        slack_api("files.uploadV2", {"content": "x", "channel": "C1",
-                                     "initial_comment": "c", "attribution": "block"})
-    msg = str(exc_info.value)
-    assert msg.startswith("Error: exception — connection reset")
-    assert "file F1 is already uploaded" in msg
 
 
 def test_upload_v2_file_uploads_paths_checked(mock_webclient, tmp_path):
@@ -666,3 +625,14 @@ def test_raw_flag_on_error_still_structural(mock_webclient):
     mock_webclient.api_call.return_value = {"ok": False, "error": "channel_not_found"}
     with pytest.raises(ToolError, match="channel_not_found"):
         slack_api("conversations.history", {"channel": "C1", "_raw": True})
+
+
+def test_upload_v2_block_attribution_refused_outside_the_core(mock_webclient):
+    """v2 core slice: attribution='block' would post its comment as a chat.postMessage
+    outside the core (no decision, no journal intent) → refused before the upload.
+    Replaces the three v1.3 block-mode tests (separate post, needs channel, comment failure)."""
+    with pytest.raises(ToolError, match="composite_not_in_slice"):
+        slack_api("files.uploadV2", {"content": "x", "channel": "C1", "initial_comment": "c",
+                                     "attribution": "block"})
+    mock_webclient.files_upload_v2.assert_not_called()
+    mock_webclient.api_call.assert_not_called()

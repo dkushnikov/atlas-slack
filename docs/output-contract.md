@@ -1,10 +1,10 @@
 ---
 title: atlas-slack — Output Contract
 status: locked
-version: 1.2
+version: 1.4
 created: 2026-04-30
 locked: 2026-04-30
-updated: 2026-09-01
+updated: 2026-10-28
 owner: Dmitry Kushnikov
 ---
 
@@ -12,6 +12,7 @@ owner: Dmitry Kushnikov
 
 ## Changelog
 
+- **v1.4 (2026-10-28, branch `feat/v2-core`, not installed)** — first slice of Architecture v2. **`chat.postMessage` runs through the door core** (policy → provenance → one-time human decision → write-ahead journal → Slack); every other write is on the labelled *transitional* path (0.4.0 behaviour + verdict refusals). New optional tool parameter **`provenance`** (§15). New **result line** after a core send: `journal: op <op_id> ok` (§4.1). New pseudo-method **`slack_api("_rights")`** — the current rights table, no Slack call (§15). **Verdict text** in the approval prompt: class, voice, recipient, policy row/mode, declared checks, text preview, op hash (§15). **New error codes** (§10b): refusals before any Slack call (`frozen`, `policy_invalid`, `profile_invalid`/`profile_missing`, `journal_unavailable`, `identity_override`, `no_decision`, `decision_mismatch`, `decision_already_used`, `decision_expired`, `decision_unknown`, `duplicate_comm_id`, `duplicate_op_id`, `ttl_expired`, `ttl_required`, `prepared_at_future`, `not_enabled_by_policy`, `recipient_denied`, `voice_mismatch`, `target_mismatch`, `provenance_invalid`, `user_token_in_process`, `no_notary`, `attribution_unavailable`, `token_unavailable`, `method_refused`) and **`outcome_unknown`** after an ambiguous transport failure. **FMT-007** — `search.messages` matches render `in #<name> (<id>)` and a `permalink:` line (§4.2). **FMT-008** — an empty page with a cursor renders `0 <items> on this page next_cursor=<c> — more remain; continue with this cursor.` instead of `No <items> found.` (§4.2, §4.4, §4.7, §4.9, §4.12). **GATE-002** — `username` / `icon_emoji` / `icon_url` on any write refuse `identity_override`. §9 — the attributed bot id comes from the profile (`bot_user_id`), no workspace default in code.
 - **v1.3 (2026-10-22)** — UPL-002 (issue #4): **`files.uploadV2` is live** — the gateway maps it to slack_sdk `files_upload_v2` (getUploadURLExternal → PUT → completeUploadExternal run by the SDK); before, it returned `unknown_method` and uploads from agent sessions needed a hand-rolled HTTP PUT outside the plugin. Pre-flight: `channel` string (a string in `channels` is refused — UPL-001), `file` absolute and existing, `content`/`file_uploads` passed through. §9 — attribution on `initial_comment` as a text suffix (as `completeUploadExternal`); `attribution: "block"` posts the comment separately with the context block and `<permalink|title>`. Render unchanged (§4.8/§4.9) plus a `comment: posted ts=…` line in block mode. Gate: `files.uploadV2` asks, like every write. **Same day, MC ask after the live checks:** **bot auto-split** — `as_bot=True` on `chat.postMessage`/`update`/`scheduleMessage` with `text` > 3000 chars and no caller `blocks` gets the §9 section split (no context block); `text` kept as the fallback. **`_raw` flag** — `"_raw": true` in params is stripped before the call and the response is rendered as §4.16 JSON with no args-echo (delivery checks: the `blocks` of a sent message). **Transcription in §4.8** — `files.info` renders `transcription: <status> (<locale>) — "<preview ≤160>…"` and `vtt: available — slack_download(id, vtt=True)` when Slack has transcribed the media; `slack_download(…, vtt=True)` fetches the WebVTT (`no_transcript` when there is none).
 - **v1.2 (2026-09-01)** — v1.2 build plan (Slack-stack audit): **structural errors** — Slack failures (ok:false / SlackApiError / exceptions) raise `ToolError`, so the MCP result carries `is_error=true`; error text (`Error: <code> — <hint>`) unchanged, and the Slack error code is now extracted from `SlackApiError` so the §10 hint catalogue fires on live calls (§10). **Unread state** — §4.3 renders `last_read` / `unread` (was whitelisted away); DMs render `Channel: DM with <user>` instead of `#?`. **Default limit** — `conversations.history`/`replies` get `limit=100` injected when the caller passes none. **Args echo** — list shapes lead with `» <method> <k=v ...>` echoing the caller's request args (§8). **Blocks pre-validation** — caller-supplied section blocks >3000 chars are refused pre-flight with block index + hint instead of an API 400 (§10). **Tool surface** — the 13 convenience wrappers removed; surface is `slack_api` + `slack_download`.
 - **v1.1 (2026-08-21)** — minor, additive (issues #1/#3): §4.2b message extras — attachments (message shares, unfurls) and file stubs render in message lists and pins; `search.messages` nested `{"messages": {"matches": [...]}}` shape unwrapped (was erroring — FMT-003); §9 — streaming methods bot-only (pre-flight refusal under user token) + auto-split of >3000-char text into multiple section blocks on attribution wrap; §10 — `invalid_blocks` hint.
@@ -64,6 +65,7 @@ The contract: which fields each shape preserves, in which order. Output format i
 Message (ts=<ts>) <thread_ts=<thread_ts>>?:
 <text>
 <channel: <channel_id>>?
+journal: op <op_id> ok                    ← v1.4, chat.postMessage through the core only
 ```
 
 Preserved: `ts`, `text` (full), `thread_ts` (if present), `channel` (echo).
@@ -73,8 +75,9 @@ Dropped: `bot_profile`, `app_id`, `team`, internals.
 
 ```
 N messages: <next_cursor=<cursor>>?
-  [<ts>] <<user>> <thread_ts=<thread_ts>>? <replies=N>? <👍3 ❤️1>?
+  [<ts>] <<user>> <in #<name> (<channel_id>)>? <thread_ts=<thread_ts>>? <replies=N>? <👍3 ❤️1>?
   <text — full, no cap>
+  <permalink: <url>>?
 
   [<ts>] ...
   ... and N more
@@ -84,7 +87,8 @@ Preserved per item: `ts`, `user`, `text` (full), `thread_ts` (if reply), reactio
 - **Reactions** rendered as visual aggregate `👍3 ❤️1 🎉2` (emoji char + count, space-separated). Omitted entirely when no reactions.
 - **`thread_ts` shown only when message is a reply** (`thread_ts` present and `!= ts`). For thread parents, `reply_count` field signals thread existence — shown as `replies=N` instead.
 - List cap: **200 messages**. Slack's natural max is 1000 per call.
-- Cursor: passed through in header only when non-empty.
+- Cursor: passed through in header only when non-empty. **v1.4 (FMT-008):** an empty page with a non-empty cursor renders `0 messages on this page next_cursor=<c> — more remain; continue with this cursor.`; `No messages found.` only when there is no cursor. Same rule for channel, member, user, file and pin lists.
+- **v1.4 (FMT-007):** a message that carries its channel (search matches: `channel: {id, name}`) renders `in #<name> (<id>)` first in the meta (DM/MPIM: no `#`), and its `permalink` on its own line after the text — the path from a hit to `conversations.replies`.
 
 > Search results note: Slack's `search.messages` returns highlighted/truncated `text` server-side. Formatter preserves verbatim — caller should follow up with `conversations.replies(channel, ts)` if full body needed. This is documented in §5 of SKILL.md.
 > The nested response shape `{"messages": {"total": N, "matches": [...]}}` is unwrapped to the match list before rendering (v1.1, FMT-003).
@@ -324,8 +328,8 @@ When list exceeds cap: append `... and N more` as the last line. The cursor (if 
 
 When `as_bot=False` (the owner's user token, recipient-facing):
 
-- `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` → append Block Kit context block: `:blue_heart: <@ATLAS_BOT_USER_ID>`. If no `blocks` key in params, wrap existing `text` into a section block first.
-- `files.uploadV2.initial_comment`, `files.completeUploadExternal.initial_comment`, `chat.meMessage.text` → append text suffix: `\n\n:blue_heart: <@ATLAS_BOT_USER_ID>` (a file-share message cannot carry blocks). `files.uploadV2` with `attribution: "block"` (v1.3): the file is uploaded without the comment, then one `chat.postMessage` carries the comment (auto-split sections), `<permalink|title>` and the context block — two messages, block attribution preserved; `thread_ts` is carried over. Ignored under `as_bot=True`.
+- `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` → append Block Kit context block: `:blue_heart: <@bot_user_id>` (v1.4: the bot id comes from the profile — `bot_user_id`, or `ATLAS_BOT_USER_ID` for the built-in profile; without it person-voice sends refuse `attribution_unavailable`, never attribute to a guessed bot). If no `blocks` key in params, wrap existing `text` into a section block first.
+- `files.uploadV2.initial_comment`, `files.completeUploadExternal.initial_comment`, `chat.meMessage.text` → append text suffix: `\n\n:blue_heart: <@ATLAS_BOT_USER_ID>` (a file-share message cannot carry blocks). `files.uploadV2` with `attribution: "block"` (v1.3): the file is uploaded without the comment, then one `chat.postMessage` carries the comment (auto-split sections), `<permalink|title>` and the context block — two messages, block attribution preserved; `thread_ts` is carried over. Ignored under `as_bot=True`. **v1.4: refused** with `composite_not_in_slice` under `as_bot=False` — the comment post would be a `chat.postMessage` outside the v2 core (no decision, no journal intent); it returns as a composite operation with a child `op_id` (A4).
 - All other methods (reactions, pins, reads, profile, dnd) → no injection.
 
 When `as_bot=True` → never inject. The auto-split still applies (v1.3): `chat.postMessage` / `chat.update` / `chat.scheduleMessage` with plain `text` > 3000 chars and no caller `blocks` get the same section split, without the context block; `text` stays as the notification fallback.
@@ -347,6 +351,51 @@ v1.1 additions:
 | Network/SDK exception (no Slack error code) | `Error: exception — <str(exception)>` |
 | Missing required params (caught early) | `Error: missing_params — <which>` |
 | Caller-supplied section block >3000 chars (v1.2, pre-flight) | `Error: invalid_blocks — blocks[<i>] section text is <n> chars ...` — refused before the API call; auto-split (§9) covers plain `text` only, never caller blocks |
+
+### 10b. Door refusals and outcomes (v1.4, v2 core)
+
+Raised as `ToolError` like every row above, text `Error: <code> — <message>`. **No Slack call was made** for any code in the first table.
+
+| Code | When |
+|---|---|
+| `frozen` | profile `freeze: true` — every write refuses, reads continue |
+| `policy_invalid` | the policy file has bad yaml, a schema error, or its sha256 ≠ the profile's `policy_sha256` pin |
+| `profile_missing` / `profile_invalid` | `ATLAS_SLACK_PROFILE` names a missing file / the file is unparsable, has unknown keys or something token-shaped |
+| `journal_unavailable` | the journal cannot record the intent (directory unwritable, disk) — nothing is sent, reports to the person included |
+| `identity_override` | `username` / `icon_emoji` / `icon_url` on any write (invariant vii) |
+| `method_refused` | `auth.revoke` (row 8 — app/token management is not done through the door) |
+| `no_decision` | a core send arrived without a decision token (not approved through the hook) |
+| `decision_mismatch` | the operation changed after approval: text, channel, thread, any param, voice, class, `scheduled_for` |
+| `decision_already_used` | the one-time decision was already consumed by a send |
+| `decision_expired` / `decision_unknown` | decision older than 10 min / token not recorded in this door's journal |
+| `duplicate_comm_id` | the `comm_id` already has a write (ok/pending/unknown); pass `resend: true` with a fresh approval |
+| `duplicate_op_id` | the `op_id` is already reserved |
+| `ttl_expired` / `ttl_required` | `ttl_s` elapsed since the journal's first sighting of the `comm_id` / `origin: prepared-as-human` without `ttl_s` |
+| `prepared_at_future` | caller `prepared_at`, or the journal's first sighting, is > 60 s in the future |
+| `not_enabled_by_policy` | the class is off for that channel (built-in strict: B-a, C1, C2) |
+| `recipient_denied` | channel or a declared recipient is on the policy deny list for the class |
+| `voice_mismatch` / `prepared_as_human_bot_voice` | provenance voice ≠ token voice or ≠ the class's voice / prepared-as-human in the bot voice |
+| `target_mismatch` | `provenance.target.channel` ≠ `params.channel` |
+| `provenance_invalid` | provenance fails the schema (unknown fields, bad class, ...) |
+| `user_token_in_process` / `no_notary` | autonomous class B-a/C1 in a process holding the person's token / without a notary stamp |
+| `c2_not_to_person` | class C2 posting anywhere but the person's bot DM |
+| `attribution_unavailable` | person-voice send and the profile has no `bot_user_id` |
+| `token_unavailable` | the token env var for the chosen voice is not set |
+| `no_decision_adapter` | library face (`Door`): the send needs a human and the library has no adapter |
+| `missing_params` | `chat.postMessage` without `channel` |
+| `method_noncanonical` | the method name is not exactly a Slack method name — another case or whitespace around a registered name (`"chat.PostMessage"`, `"chat.postMessage "`), or not a valid dotted name; the message names the canonical spelling |
+| `profile_mismatch` | the decision was issued by the hook under another profile than the MCP server runs — `ATLAS_SLACK_PROFILE` differs between the two environments |
+| `permission_mode_unsafe` | (hook `deny`) the session's permission mode cannot guarantee that a human sees the prompt — `bypassPermissions`, `dontAsk` or an unknown mode; allowed list: profile `decision_permission_modes` (default: default, acceptEdits, plan, auto) |
+| `composite_not_in_slice` | `files.uploadV2` with `attribution: "block"` (person voice) — its comment post would be a `chat.postMessage` outside the core |
+| `provenance_required` | an autonomous class (B-a, C1) without real provenance |
+| `voice_not_allowed` | the policy's `voices` for the channel exclude the voice |
+| `read_scope_violation` | library manifest: a read outside `read_scope` (channel not listed, channel-less method not in `read_scope.methods`, any `search.*`) |
+| `method_not_in_manifest` / `target_not_in_manifest` / `class_not_in_manifest` | library manifest: method not in `allowed_methods` / channel not in `allowed_targets` / provenance class ≠ manifest `cls` |
+| `not_in_slice` | library face: a transitional write or an unregistered read — the library runs registered reads and `chat.postMessage` only |
+
+Pre-flight codes kept from v1.1–v1.3 (no Slack call): `user_token_stream` (streams under the user token), `invalid_blocks` (caller section > 3000 chars), `invalid_arguments` (`channels` as a string on `files.uploadV2`), `file_not_found` (upload path missing / not absolute), `exception` (SDK or network error without a Slack code — on the transitional path; on the core path it is `outcome_unknown`).
+
+After the call (the intent row exists) — `outcome_not_journaled` is **not** an error: Slack accepted the post (ts shown) but the outcome row could not be written; the result ends with `⚠ outcome_not_journaled: sent (ts=…) … do not resend` and the op stays `pending` → `unknown` in the journal. Slack `ok=false` → `Error: <code> — <hint> — journal: op <id> error` (outcome `error`, nothing posted). Timeout / connection error / any non-Slack exception → `Error: outcome_unknown — … outcome unknown (op <id>); reconcile before any resend, never retry blindly` (outcome `unknown`).
 
 ### How hints work
 
@@ -374,7 +423,7 @@ Hints are advisory, not authoritative — caller can override based on context.
 ## 11. Out of scope
 
 - **Raw JSON access mode.** Not exposing a `raw=True` parameter — single output format keeps SKILL guidance simple. If raw is genuinely needed, caller can `slack_api` against a method whose shape isn't in §5 (falls into §4.16 JSON fallback).
-- **Multi-workspace.** `ATLAS_BOT_USER_ID` is hardcoded to Acme; multi-workspace work is a separate spec.
+- **Multi-workspace.** One workspace per profile (v1.4: profile `workspace_id`, `bot_user_id`; `Door.doctor()` checks an `auth.test` against them). A second workspace = a second profile.
 - **Streaming / partial responses.** Slack SDK is request/response; no streaming.
 - **Localization.** All output English. Slack content is preserved verbatim including non-Latin scripts.
 - **Block Kit pretty-printing.** When a message has `blocks`, formatter shows `text` (Slack-rendered fallback). Pretty-printing block trees would balloon output.
@@ -404,7 +453,28 @@ Locked 2026-04-30 in review with the owner.
 
 ## 14. Status
 
-v1.2 — 2026-09-01, implemented in the v1.2 build (headless AI-SDLC pilot run from the Slack-stack audit). v1.0 locked 2026-04-30 with the owner; v1.1 additions 2026-08-21.
+v1.4 — 2026-10-28 on branch `feat/v2-core` (not installed). v1.3 — 2026-10-22. v1.2 — 2026-09-01, implemented in the v1.2 build (headless AI-SDLC pilot run from the Slack-stack audit). v1.0 locked 2026-04-30 with the owner; v1.1 additions 2026-08-21.
+
+
+## 15. Provenance, verdict text, `_rights` (v1.4)
+
+**`provenance`** (optional object, `chat.postMessage`; schema in `docs/policy-schema.md` § Provenance): `cls` (`A` person voice · `B-h` bot voice, human-approved · `B-a` / `C1` / `C2` autonomous — refused by the built-in strict policy), `voice`, `comm_id`, `op_id`, `prepared_by`, `target {channel, users, is_mpim}`, `checks {…}`, `sources […]`, `origin` (`live` | `prepared-as-human`), `ttl_s`, `prepared_at`, `scheduled_for`, `resend`, `decision` (set by the hook — callers never set it). Without provenance a send still asks, with the warning `provenance missing — migration rule A12.2` (classes A/B-h only).
+
+**Approval prompt** (hook `permissionDecisionReason`, ask; v1.4 after the live check — language from the profile):
+
+```
+<sender> → <target>: “<text>” | message below (<n> chars). <voice sentence>. <Resend.>? Send?
+<text — full up to 400 chars, else first 400 + "… (<n> chars)">?      ← only when not quoted inline (> 120 chars or multi-line)
+<checks: k=v, …>?                                                     ← only when the context declared checks
+<⚠ no context policy — the built-in strict policy applies>?           ← only under the built-in policy
+class <cls> · policy <version> <· comm <comm_id>>? · op <8 hex> <· blocks N>? <· params a,b>?
+```
+
+`sender` = the bot's or the person's display name; `target` = `#channel`, `DM <name>`, `DM <person>↔<bot>` (the person's bot DM), `group DM <names>`, with ` (in thread)` / ` + also to the channel` (reply_broadcast); an id that cannot be resolved stays as `<id> (unresolved)`. Russian: «Atlas → DM владелец↔Atlas: “…”. Голос бота, по твоему запросу. Отправить?». Row, mode, profile, origin and empty checks are in the journal, not in the prompt. The tool input Claude Code shows above it is compact: the caller's provenance keys plus `decision: {t, p}`.
+
+Transitional writes keep the 0.4.0 text with ` (transitional — not yet under the v2 core; today's gate semantics)` appended; `conversations.open` keeps its GATE-001 text. Refusals reach Claude as a hook `deny`: `atlas-slack refused — <code>: <message>`.
+
+**`slack_api("_rights")`** — text table: header (profile, policy version/state/digest, freeze, capabilities: tokens, journal path, decision adapters, notary, identity source), then rows 0/1/2/4 × classes A, B-h, B-a, C1, C2 with `allow`, `human decision`, `disabled: <why>`, `refuse (<why>)`, then the classified channels of the policy. No Slack call.
 
 ---
 
