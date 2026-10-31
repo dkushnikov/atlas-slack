@@ -54,13 +54,14 @@ const L: Record<Lang, Record<string, string>> = {
     lblCicero: 'Cicero (голос и контекст)', lblRecipient: 'адресат и регистр', lblVoice: 'голос', lblDisclosure: 'раскрытие участия Atlas',
     lblMark: 'пометка', lblPolicyRow: 'строка политики', lblSources: 'источники',
     notify: 'atlas-slack: нужно решение',
-    do: 'Выполнить', doAsk: 'Выполнить?', action: 'Действие: ', where: 'Где:      ', when: 'Когда:    ', message: 'сообщение', user: 'для',
+    do: 'Выполнить', doAsk: 'Выполнить?', action: 'Действие: ', byBot: 'от Atlas', byYou: 'от тебя (твой аккаунт)', where: 'Где:      ', when: 'Когда:    ', message: 'сообщение', user: 'для',
     transitional: '🔏 привязка 🔴 нет · 📓 журнал 🔴 нет — переходный путь (не через ядро двери, срез 2)',
     mReactAdd: '👍 поставить реакцию :{name}:', mReactRemove: '👎 убрать реакцию :{name}:', mDelete: '🗑 удалить сообщение',
     mUpdate: '✏️ изменить сообщение', mSchedule: '⏰ запланировать сообщение', mEphemeral: '👁 показать сообщение только одному человеку',
     mPinAdd: '📌 закрепить сообщение', mPinRemove: '📌 открепить сообщение', mUpload: '📎 загрузить файл {name}', mOpen: '💬 открыть DM',
     mOther: 'Slack write: {method}',
     denyNo: 'atlas-slack: отклонено на карточке — ничего не отправлено',
+    denyDismissed: 'atlas-slack: диалог одобрения закрыт (Esc) — ничего не отправлено; спроси человека, что делать дальше',
     denyEdit: 'atlas-slack: правка от владельца — «{t}». Ничего не отправлено: перепиши сообщение с учётом правки и вызови отправку снова (новая карточка).',
   },
   en: {
@@ -76,13 +77,14 @@ const L: Record<Lang, Record<string, string>> = {
     lblCicero: 'Cicero (voice and context)', lblRecipient: 'recipient and register', lblVoice: 'voice', lblDisclosure: 'disclosure of Atlas',
     lblMark: 'mark', lblPolicyRow: 'policy row', lblSources: 'sources',
     notify: 'atlas-slack: decision needed',
-    do: 'Proceed', doAsk: 'Proceed?', action: 'Action:  ', where: 'Where:   ', when: 'When:    ', message: 'message', user: 'for',
+    do: 'Proceed', doAsk: 'Proceed?', action: 'Action:  ', byBot: 'by Atlas', byYou: 'by you (your account)', where: 'Where:   ', when: 'When:    ', message: 'message', user: 'for',
     transitional: '🔏 binding 🔴 none · 📓 journal 🔴 none — transitional path (not through the door core; slice 2)',
     mReactAdd: '👍 add reaction :{name}:', mReactRemove: '👎 remove reaction :{name}:', mDelete: '🗑 delete a message',
     mUpdate: '✏️ edit a message', mSchedule: '⏰ schedule a message', mEphemeral: '👁 show a message to one person only',
     mPinAdd: '📌 pin a message', mPinRemove: '📌 unpin a message', mUpload: '📎 upload file {name}', mOpen: '💬 open a DM',
     mOther: 'Slack write: {method}',
     denyNo: 'atlas-slack: declined on the card — nothing was sent',
+    denyDismissed: 'atlas-slack: the approval dialog was closed (Esc) — nothing was sent; ask the person what to do next',
     denyEdit: 'atlas-slack: edit from the person — «{t}». Nothing was sent: rework the message with this edit and call the send again (a new card).',
   },
 }
@@ -238,7 +240,7 @@ export function buildTransitionalCard(method: string, params: AnyParams, asBot: 
   // the gate's own explanation (GATE-001 for conversations.open, the transitional label) stays, minus the label
   const gate = (lines[0] ?? '').replace(/\s*\((transitional|переходн)[^)]*\)\s*$/, '')
   return [
-    `${t.action}${what} · ${asBot ? t.botVoice : t.personVoice}`,
+    `${t.action}${what} · ${asBot ? t.byBot : t.byYou}`,
     ...(place.length ? [`${t.where}${place.join(' · ')}`] : []),
     ...(when ? [`${t.when}${when}`] : []),
     ...(shown ? ['', t.text!, shown] : []),
@@ -280,8 +282,11 @@ export const register: Register = on => {
     try {
       answer = await $.ui.ask(card, { options: [core ? t.yes! : t.do!, t.no!], header: HEADER })
     } catch (err) {
+      // Esc / a closed dialog: the engine's own error text is long and machine-shaped (MC session
+      // finding 2026-10-31); the model only needs to know that nothing was sent.
       const why = err instanceof Error ? err.message : String(err)
-      return { decision: 'deny', reason: `atlas-slack: the approval dialog was dismissed (${why}) — nothing was sent` }
+      try { $.ui.log(`atlas-slack: approval dialog dismissed — ${why.slice(0, 200)}`, { to: 'debug' }) } catch { /* a log is a courtesy */ }
+      return { decision: 'deny', reason: t.denyDismissed! }
     }
     if (answer === (core ? t.yes : t.do)) {
       return { decision: 'allow', reason: 'atlas-slack: approved on the card' }

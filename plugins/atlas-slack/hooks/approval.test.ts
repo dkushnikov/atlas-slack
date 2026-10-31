@@ -73,7 +73,7 @@ test('a read is left to the engine; a transitional write gets a card too', async
   expect(read.decision).toBe('allow')
   const transitional = await $.tool.check({ tool: SLACK_API, input: { method: 'reactions.add', params: {} } })
   expect(transitional.decision).toBe('deny')                   // the card was raised and nobody could answer it
-  expect(transitional.reason ?? '').toContain('nothing was sent')
+  expect(transitional.reason ?? '').toMatch(/ничего не отправлено|nothing was sent/)
   const rights = await $.tool.check({ tool: SLACK_API, input: { method: '_rights' } })
   expect(rights.decision).toBe('ask')                          // pseudo-methods are left to the engine
 })
@@ -82,7 +82,8 @@ test('a core send that nobody can approve is denied, never allowed', async ($, o
   on('tool.check', { tool: SLACK_API }, () => ({ decision: 'ask', reason: REASON }))
   const v = await $.tool.check({ tool: SLACK_API, input: SEND })
   expect(v.decision).toBe('deny')
-  expect(v.reason ?? '').toContain('nothing was sent')
+  expect(v.reason ?? '').toMatch(/ничего не отправлено|nothing was sent/)
+  expect((v.reason ?? '').length).toBeLessThan(160)            // no engine error text leaks into the reason
 })
 
 
@@ -171,13 +172,13 @@ test('an English gate prompt makes an English card with the same marks', async (
 test('transitional writes get a compact card: reaction, delete, scheduled message with its time', async () => {
   const react = buildTransitionalCard('reactions.add', { channel: 'C1', timestamp: '1.2', name: 'thumbsup' }, false,
     'Slack write: reactions.add (transitional — not yet under the v2 core; today\'s gate semantics)')
-  expect(react.split('\n')[0]).toBe('Действие: 👍 поставить реакцию :thumbsup: · (твоим голосом, пометка 💙 Atlas)')
+  expect(react.split('\n')[0]).toBe('Действие: 👍 поставить реакцию :thumbsup: · от тебя (твой аккаунт)')
   expect(react).toContain('Где:      C1 · сообщение 1.2')
   expect(react).toContain('Дверь:  🔏 привязка 🔴 нет · 📓 журнал 🔴 нет — переходный путь')
   expect(react.endsWith('Выполнить?')).toBe(true)
   expect(react).not.toContain('transitional —')
   const del = buildTransitionalCard('chat.delete', { channel: 'C1', ts: '1.3' }, true, 'Slack write: chat.delete (transitional)')
-  expect(del).toContain('Действие: 🗑 удалить сообщение · (голос бота)')
+  expect(del).toContain('Действие: 🗑 удалить сообщение · от Atlas')
   expect(del).toContain('Где:      C1 · сообщение 1.3')
   const sched = buildTransitionalCard('chat.deleteScheduledMessage', { channel: 'C1', scheduled_message_id: 'Q1' }, true,
     'Slack write: chat.deleteScheduledMessage (transitional)')
@@ -187,7 +188,7 @@ test('transitional writes get a compact card: reaction, delete, scheduled messag
   expect(open).toContain('Действие: 💬 открыть DM')
   expect(open).toContain('Где:      для U1,U2')
   const other = buildTransitionalCard('usergroups.update', { usergroup: 'S1' }, false, 'Slack write: usergroups.update (transitional)', 'en')
-  expect(other.split('\n')[0]).toBe('Action:  Slack write: usergroups.update · (your voice, marked 💙 Atlas)')
+  expect(other.split('\n')[0]).toBe('Action:  Slack write: usergroups.update · by you (your account)')
   expect(other.endsWith('Proceed?')).toBe(true)
 })
 

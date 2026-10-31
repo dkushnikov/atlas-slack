@@ -212,7 +212,7 @@ def test_op_row_keeps_the_ledger_line_the_card_showed(isolated_door_dirs, monkey
     entry(tmp_path, "x.md", drafts=("hello team",), comm_id="20261031-keep", audit="pass", audit_at="2026-10-31", intention="do")
     res = env.send(env.approve(post(text="hello team", comm_id="20261031-keep")))
     row = next(r for r in env.journal.ops() if r["op_id"] == res.op_id)
-    assert '"ledger_at_decision"' in row["provenance_json"]
+    assert '"ledger_at_send"' in row["provenance_json"]
     assert "аудит Cicero 2026-10-31" in row["provenance_json"] or "Cicero audit 2026-10-31" in row["provenance_json"]
     assert '"intention: do"' in row["provenance_json"]
     res2 = env.send(env.approve(post(text="edited", comm_id="20261031-keep", resend=True)))

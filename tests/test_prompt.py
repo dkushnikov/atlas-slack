@@ -147,7 +147,7 @@ def test_wire_payload_is_compact_and_token_short(prof, monkeypatch):
                        "tool_input": {"method": "chat.postMessage", "params": {"channel": "C0PLATFORM", "text": "x"},
                                       "as_bot": True, "provenance": caller}})["hookSpecificOutput"]
     wire = out["updatedInput"]["provenance"]
-    assert set(wire) == {"cls", "comm_id", "decision"} and set(wire["decision"]) == {"t", "p"}
+    assert set(wire) == {"cls", "comm_id", "decision"} and set(wire["decision"]) == {"t", "p", "v"}
     tok = wire["decision"]["t"]
     nonce, mac = tok.split(".")
     assert len(nonce) == 16 and len(mac) == 32 and len(tok) == 49

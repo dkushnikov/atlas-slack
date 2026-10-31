@@ -145,6 +145,17 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
                                 profile.decision_fallback)
         if not dc.ok:
             raise refused(_refuse(verdict, dc.code, dc.detail))
+        # The hook and this server must run the same code: after /reload-plugins the hook runs main's
+        # src/ at once while a live server keeps its old module — a token the server does not
+        # understand, or a method the two classify differently, must not slip through (MC session,
+        # 2026-10-31: a 0.5.3 hook issued a token, a 0.5.2 server sent chat.scheduleMessage transitionally).
+        from atlas_slack import __version__
+        hook_v = (prov.decision or {}).get("v") if isinstance(prov.decision, dict) else None
+        if hook_v != __version__:   # a valid token from a hook of another version
+            raise refused(_refuse(
+                verdict, "version_skew",
+                f"the hook runs atlas-slack {hook_v or '< 0.5.4'} but this MCP server runs {__version__} — restart the "
+                "session (a /reload-plugins or /mcp Reconnect alone leaves them apart); nothing was sent"))
         if not prov.prepared_by and dc.adapter and "session=" in dc.adapter:
             prov.prepared_by = "cc-session:" + dc.adapter.split("session=", 1)[1]
             caller = caller if caller not in ("mcp", face) else prov.prepared_by
@@ -175,15 +186,16 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
     stored_prov = prov.to_dict()
     if comm_minted:
         stored_prov["comm_id_source"] = "door"
-    # What the approval card said about the ledger (✅/☑/⚠ line, intention) — recomputed here from the
-    # same inputs the hook used, so the decision's context is provable later (MC session, 2026-10-31).
+    # The ledger line (✅/☑/⚠, intention) recomputed at send from the same inputs the hook used for the
+    # card — within the decision window (≤ 30 min) this is what the card showed, but it is the state at
+    # send, hence the name (MC session finding 2026-10-31; verifier). A failed recompute is recorded too.
     try:
         from atlas_slack import ledger as _ledger
         shown = _ledger.prompt_lines(profile, prov.comm_id, params.get("text") if isinstance(params.get("text"), str) else None)
         if shown:
-            stored_prov["ledger_at_decision"] = shown
-    except Exception:
-        pass
+            stored_prov["ledger_at_send"] = shown
+    except Exception as e:  # noqa: BLE001
+        stored_prov["ledger_at_send_error"] = f"{type(e).__name__}: {e}"[:200]
     if stored_prov.get("decision"):
         stored_prov["decision"] = {k: v for k, v in stored_prov["decision"].items() if k not in ("token", "t")}
     intent = OpIntent(

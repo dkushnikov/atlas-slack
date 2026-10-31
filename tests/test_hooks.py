@@ -136,7 +136,7 @@ class TestV2VerdictText:
         assert first.startswith("You → C1 (unresolved): “hello”.") and first.endswith("Send?")
         assert reason.splitlines()[-1].startswith("class A · policy builtin-strict-1 · op ")
         prov = out["updatedInput"]["provenance"]
-        assert set(prov) == {"decision"} and set(prov["decision"]) == {"t", "p"}
+        assert set(prov) == {"decision"} and set(prov["decision"]) == {"t", "p", "v"}
         assert len(prov["decision"]["t"]) == 49 and out["updatedInput"]["params"] == {"channel": "C1", "text": "hello"}
 
     def test_caller_supplied_token_is_replaced(self):

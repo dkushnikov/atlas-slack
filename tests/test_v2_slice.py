@@ -779,6 +779,10 @@ def test_s2_schedule_refusals_before_any_call(env):
     assert "schedule_too_far" in env.hook(schedule(comm_id="s-far", lead=200 * 86400))["permissionDecisionReason"]
     ti = schedule(comm_id="s-mismatch", scheduled_for=int(time.time()) + 7200)
     assert "schedule_mismatch" in env.hook(ti)["permissionDecisionReason"]
+    for bad in ("nan", float("nan"), "inf", float("inf"), "-inf"):
+        t = schedule(comm_id=f"s-{bad}"); t["params"]["post_at"] = bad
+        out = env.hook(t)
+        assert out["permissionDecision"] == "deny" and "missing_params" in out["permissionDecisionReason"], (bad, out)
     assert env.transport.calls == []
 
 

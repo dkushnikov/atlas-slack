@@ -71,7 +71,7 @@ def _when(post_at) -> str:
     """Local time of a `post_at` epoch for the prompt; the raw value when it is not a number."""
     import time as _t
     try:
-        return _t.strftime("%d.%m %H:%M", _t.localtime(float(post_at)))
+        return _t.strftime("%d.%m %H:%M %Z", _t.localtime(float(post_at)))      # the hook host's zone, named
     except (TypeError, ValueError, OverflowError):
         return str(post_at)
 
@@ -207,7 +207,8 @@ def hook_output(data: dict, profile=None) -> dict:
     # Compact wire form: only what the caller supplied + the decision. Defaults (origin,
     # voice, class for a provenance-less send) and op_id are derived again by the server.
     wire = {k: val for k, val in caller_prov.items() if k != "decision"}
-    wire["decision"] = {"t": token, "p": profile.name}
+    from atlas_slack import __version__
+    wire["decision"] = {"t": token, "p": profile.name, "v": __version__}   # the hook's code version
     updated = {**tool_input, "method": method, "params": params, "as_bot": as_bot, "provenance": wire}
     return _emit("ask", reason, updated)
 

@@ -12,7 +12,7 @@ Verdict = `allow | needs-human | refuse` + reason + row + class + policy
 version/digest + `transitional`. The verdict is computed locally and is the
 same for every face (MCP hook, MCP server, library `Door`).
 
-Scope of this slice: `chat.postMessage` (rows 1/2) is decided by the core;
+Scope of this slice: `chat.postMessage` and `chat.scheduleMessage` (rows 1/2) are decided by the core;
 reads are row 0 from an explicit registry; `conversations.open` is split by
 effect (A12.10). Every other write is **transitional** — today's gate
 semantics (ask), flagged in the verdict and in the hook text.
@@ -576,12 +576,15 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
         ctx.refuse("missing_params", f"{ctx.method} needs `channel` (id string)")
     if ctx.method == "chat.scheduleMessage":
         post_at = params.get("post_at")
+        import math
         try:
             post_at_f = float(post_at) if post_at is not None and not isinstance(post_at, bool) else None
         except (TypeError, ValueError):
             post_at_f = None
+        if post_at_f is not None and not math.isfinite(post_at_f):
+            post_at_f = None                      # NaN passed both bounds and reached the transport (verifier)
         if post_at_f is None:
-            ctx.refuse("missing_params", "chat.scheduleMessage needs `post_at` (epoch seconds)")
+            ctx.refuse("missing_params", "chat.scheduleMessage needs `post_at` (finite epoch seconds)")
         elif post_at_f < now + SCHEDULE_MIN_LEAD_S:
             ctx.refuse("schedule_in_past", f"post_at {int(post_at_f)} is not at least {SCHEDULE_MIN_LEAD_S} s ahead — "
                                            "send now with chat.postMessage instead")

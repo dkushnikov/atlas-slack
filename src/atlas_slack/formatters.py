@@ -274,7 +274,11 @@ def _h_single_message(method: str, c: dict, cursor: str) -> str:
     thread_ts = msg.get("thread_ts")
     channel = c.get("channel", "")
 
-    header = f"Message (ts={ts})"
+    sched = c.get("scheduled_message_id")
+    if method == "chat.scheduleMessage" and sched:
+        header = f"Scheduled message (scheduled_message_id={sched}, post_at={c.get('post_at', '?')})"
+    else:
+        header = f"Message (ts={ts})"
     if thread_ts and thread_ts != ts:
         header += f" thread_ts={thread_ts}"
     header += ":"

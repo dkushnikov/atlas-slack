@@ -880,3 +880,13 @@ class TestEmptyPageCursor:
         meta = {"response_metadata": {"next_cursor": "abc"}}
         assert "next_cursor=abc" in format_response("conversations.list", {"ok": True, "channels": [], **meta})
         assert "next_cursor=abc" in format_response("users.list", {"ok": True, "members": [], **meta})
+
+
+def test_scheduled_message_result_carries_its_id_and_time():
+    from atlas_slack.formatters import format_response
+    out = format_response("chat.scheduleMessage", {"ok": True, "channel": "C1", "scheduled_message_id": "Q0ABC",
+                                                    "post_at": 1793523600, "message": {"text": "later"}})
+    assert out.startswith("Scheduled message (scheduled_message_id=Q0ABC, post_at=1793523600):")
+    assert "later" in out and "channel: C1" in out
+    plain = format_response("chat.postMessage", {"ok": True, "channel": "C1", "ts": "1.2", "message": {"ts": "1.2", "text": "hi"}})
+    assert plain.startswith("Message (ts=1.2):")

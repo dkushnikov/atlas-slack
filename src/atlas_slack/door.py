@@ -11,8 +11,8 @@ that needs a human is **refused** (`no_decision_adapter`) — never auto-allowed
     res.verdict.decision   # allow | needs-human | refuse
     res.data               # Slack response dict (None when refused)
 
-Executed methods in this slice: reads (row 0) and `chat.postMessage` through
-the core. Every other write refuses `not_in_slice` here — the transitional
+Executed methods in this slice: reads (row 0), `chat.postMessage` and
+`chat.scheduleMessage` through the core. Every other write refuses `not_in_slice` here — the transitional
 path exists only behind the interactive hook.
 """
 
