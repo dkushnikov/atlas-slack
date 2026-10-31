@@ -175,6 +175,15 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
     stored_prov = prov.to_dict()
     if comm_minted:
         stored_prov["comm_id_source"] = "door"
+    # What the approval card said about the ledger (✅/☑/⚠ line, intention) — recomputed here from the
+    # same inputs the hook used, so the decision's context is provable later (MC session, 2026-10-31).
+    try:
+        from atlas_slack import ledger as _ledger
+        shown = _ledger.prompt_lines(profile, prov.comm_id, params.get("text") if isinstance(params.get("text"), str) else None)
+        if shown:
+            stored_prov["ledger_at_decision"] = shown
+    except Exception:
+        pass
     if stored_prov.get("decision"):
         stored_prov["decision"] = {k: v for k, v in stored_prov["decision"].items() if k not in ("token", "t")}
     intent = OpIntent(
@@ -243,7 +252,7 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
     # send — a caller that retried would post it twice. The intent row stays `pending`
     # and becomes `unknown` at the next open; the result says so explicitly.
     try:
-        journal.record_outcome(prov.op_id, "ok", slack_ts=data.get("ts"))
+        journal.record_outcome(prov.op_id, "ok", slack_ts=data.get("ts") or data.get("scheduled_message_id"))
     except JournalUnavailable as e:
         return SendResult(verdict=verdict, data=data, op_id=prov.op_id, final_params=final,
                           journal_error=str(e), comm_id=prov.comm_id, comm_minted=comm_minted)

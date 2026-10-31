@@ -45,14 +45,19 @@ def test_frontmatter_tolerates_quotes_comments_and_no_frontmatter(tmp_path):
     assert ledger.find_ledger(tmp_path, "20261031-eeee").audit == "pass"
 
 
-def test_prompt_lines_states(tmp_path, monkeypatch):
+def test_prompt_lines_states(tmp_path, monkeypatch, isolated_door_dirs):
+    cfg = isolated_door_dirs / "config"
+    cfg.mkdir(exist_ok=True)
+    (cfg / "ru.yaml").write_text(yaml.safe_dump(IDS))
+    monkeypatch.setenv("ATLAS_SLACK_PROFILE", "ru")
     monkeypatch.setenv(ledger.ENV_LEDGER_DIR, str(tmp_path))
     prof = load_profile()
+    assert prof.language == "ru"
     entry(tmp_path, "p.md", comm_id="c-pass", audit="pass", audit_at="2026-10-31", intention="понять")
     entry(tmp_path, "s.md", comm_id="c-skip", audit="skip")
     entry(tmp_path, "n.md", comm_id="c-none")
     entry(tmp_path, "o.md", comm_id="c-other", audit="partial")
-    assert ledger.prompt_lines(prof, "c-pass") == ["ledger: ✅ аудит Cicero 2026-10-31 · p.md", "intention: понять"]
+    assert ledger.prompt_lines(prof, "c-pass") == ["ledger: ✅ аудит Cicero 2026-10-31 (текст не сверен) · p.md", "intention: понять"]
     # the audit is bound to the text: equal to the last ## Draft → ✅; anything else → ⚠
     assert ledger.prompt_lines(prof, "c-pass", "hello")[0] == "ledger: ✅ аудит Cicero 2026-10-31 · p.md"
     assert ledger.prompt_lines(prof, "c-pass", "  hello \n")[0].startswith("ledger: ✅")
@@ -132,7 +137,11 @@ def test_approval_prompt_carries_the_ledger_lines(isolated_door_dirs, monkeypatc
     assert any(l.startswith("ledger: ⚠ аудит 2026-10-31 был для другого текста") for l in describe_send(v3, edited, True, prof).split("\n"))
 
 
-def test_round3_edge_cases(tmp_path, monkeypatch):
+def test_round3_edge_cases(tmp_path, monkeypatch, isolated_door_dirs):
+    cfg = isolated_door_dirs / "config"
+    cfg.mkdir(exist_ok=True)
+    (cfg / "ru.yaml").write_text(yaml.safe_dump(IDS))
+    monkeypatch.setenv("ATLAS_SLACK_PROFILE", "ru")
     monkeypatch.setenv(ledger.ENV_LEDGER_DIR, str(tmp_path))
     prof = load_profile()
     entry(tmp_path, "hash.md", comm_id="c-hash", audit="pass", intention='"fix issue #12 now"')
@@ -166,3 +175,46 @@ def test_comm_id_must_be_one_printable_line():
     with pytest.raises(ProvenanceError):
         Provenance.from_dict({"cls": "A", "comm_id": "y" * 129}, as_bot=False)
     assert Provenance.from_dict({"cls": "A", "comm_id": "20261031-ab12"}, as_bot=False).comm_id == "20261031-ab12"
+
+
+def test_round4_blocks_only_empty_draft_unbound(tmp_path, monkeypatch, isolated_door_dirs):
+    cfg = isolated_door_dirs / "config"
+    cfg.mkdir(exist_ok=True)
+    (cfg / "ru.yaml").write_text(yaml.safe_dump(IDS))
+    monkeypatch.setenv("ATLAS_SLACK_PROFILE", "ru")
+    monkeypatch.setenv(ledger.ENV_LEDGER_DIR, str(tmp_path))
+    prof = load_profile()
+    entry(tmp_path, "b.md", drafts=("hello",), comm_id="c-b", audit="pass", audit_at="2026-10-31")
+    assert ledger.prompt_lines(prof, "c-b", "")[0] == "ledger: ✅ аудит Cicero 2026-10-31 (текст в blocks — не сверен) · b.md"
+    assert ledger.prompt_lines(prof, "c-b", None)[0] == "ledger: ✅ аудит Cicero 2026-10-31 (текст не сверен) · b.md"
+    entry(tmp_path, "e.md", drafts=("   ",), comm_id="c-e", audit="pass")
+    assert ledger.prompt_lines(prof, "c-e", "x")[0] == "ledger: ⚠ аудит, но в ledger нет текста (## Draft) · e.md"
+
+
+def test_english_profile_gets_english_lines(tmp_path, monkeypatch, isolated_door_dirs):
+    cfg = isolated_door_dirs / "config"
+    cfg.mkdir(exist_ok=True)
+    (cfg / "en.yaml").write_text(yaml.safe_dump({**IDS, "language": "en"}))
+    monkeypatch.setenv("ATLAS_SLACK_PROFILE", "en")
+    monkeypatch.setenv(ledger.ENV_LEDGER_DIR, str(tmp_path))
+    prof = load_profile()
+    entry(tmp_path, "p.md", comm_id="c-pass", audit="pass", audit_at="2026-10-31", intention="do")
+    assert ledger.prompt_lines(prof, "c-pass", "hello") == ["ledger: ✅ Cicero audit 2026-10-31 · p.md", "intention: do"]
+    assert ledger.prompt_lines(prof, "c-pass", "other")[0] == \
+        "ledger: ⚠ audit 2026-10-31 was for a different text — append Draft vN and re-audit · p.md"
+    assert ledger.prompt_lines(prof, "nope") == ["ledger: ⚠ not found (comm nope)"]
+
+
+def test_op_row_keeps_the_ledger_line_the_card_showed(isolated_door_dirs, monkeypatch, tmp_path):
+    from test_v2_slice import Env, post
+    env = Env("atlas-like", isolated_door_dirs, monkeypatch)
+    monkeypatch.setenv(ledger.ENV_LEDGER_DIR, str(tmp_path))
+    entry(tmp_path, "x.md", drafts=("hello team",), comm_id="20261031-keep", audit="pass", audit_at="2026-10-31", intention="do")
+    res = env.send(env.approve(post(text="hello team", comm_id="20261031-keep")))
+    row = next(r for r in env.journal.ops() if r["op_id"] == res.op_id)
+    assert '"ledger_at_decision"' in row["provenance_json"]
+    assert "аудит Cicero 2026-10-31" in row["provenance_json"] or "Cicero audit 2026-10-31" in row["provenance_json"]
+    assert '"intention: do"' in row["provenance_json"]
+    res2 = env.send(env.approve(post(text="edited", comm_id="20261031-keep", resend=True)))
+    row2 = next(r for r in env.journal.ops() if r["op_id"] == res2.op_id)
+    assert "другого текста" in row2["provenance_json"] or "different text" in row2["provenance_json"]

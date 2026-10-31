@@ -58,13 +58,22 @@ TEXT_BLOCK = 400      # shown in full below the sentence up to this length
 _T = {
     "en": {"bot_voice": "Bot voice, on your request.", "person_voice": "In your voice, marked 💙 {bot}.",
            "send": "Send?", "resend": "Resend.", "thread": " (in thread)", "broadcast": " + also to the channel",
-           "below": "message below", "chars": "chars", "you": "You", "bot": "the bot",
+           "below": "message below", "chars": "chars", "you": "You", "bot": "the bot", "scheduled": " · scheduled for {when}",
            "no_policy": "⚠ no context policy — the built-in strict policy applies"},
     "ru": {"bot_voice": "Голос бота, по твоему запросу.", "person_voice": "Твоим голосом, с пометкой 💙 {bot}.",
            "send": "Отправить?", "resend": "Повторная отправка.", "thread": " (в тред)",
-           "broadcast": " + в канал", "below": "сообщение ниже", "chars": "симв.", "you": "Ты", "bot": "бот",
+           "broadcast": " + в канал", "below": "сообщение ниже", "chars": "симв.", "you": "Ты", "bot": "бот", "scheduled": " · отложено на {when}",
            "no_policy": "⚠ политики контекста нет — действует встроенная строгая"},
 }
+
+
+def _when(post_at) -> str:
+    """Local time of a `post_at` epoch for the prompt; the raw value when it is not a number."""
+    import time as _t
+    try:
+        return _t.strftime("%d.%m %H:%M", _t.localtime(float(post_at)))
+    except (TypeError, ValueError, OverflowError):
+        return str(post_at)
 
 
 def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=None, op_short: str = "") -> str:
@@ -85,6 +94,8 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
         target += t["thread"]
     if str(params.get("reply_broadcast", "")).lower() in ("true", "1"):
         target += t["broadcast"]
+    if params.get("post_at") is not None:
+        target += t["scheduled"].format(when=_when(params.get("post_at")))
     text = params.get("text") if isinstance(params.get("text"), str) else ""
     inline = text and len(text) <= TEXT_INLINE and "\n" not in text
     what = f"“{text}”" if inline else f"{t['below']} ({len(text)} {t['chars']})" if text else "blocks"

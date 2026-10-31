@@ -1,6 +1,6 @@
 {
   "name": "atlas-slack",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Full Slack Web API access via MCP - generic gateway for all 200+ methods plus slack_download for file bytes. Structural errors, unread state, args echo, files.uploadV2 via the SDK, bot auto-split, _raw flag, Slack transcripts. v2 core slice: policy engine, provenance (comm_id minted by the door), 30-min one-time decisions, SQLite write-ahead journal, Door library, profiles (contract v1.5).",
   "author": {
     "name": "Dmitry Kushnikov"

@@ -735,3 +735,63 @@ def test_v11_every_emitted_error_code_is_in_the_contract():
     missing = sorted(c for c in codes if f"`{c}`" not in section)
     assert len(codes) > 25
     assert missing == [], missing
+
+
+# ---------------------------------------------------------------- slice 2, part 1: chat.scheduleMessage
+class ScheduleTransport(FakeTransport):
+    def __call__(self, method, params, as_bot):
+        with self.lock:
+            self.calls.append((method, dict(params), as_bot))
+        return {"ok": True, "channel": params.get("channel"), "scheduled_message_id": f"Q{len(self.calls):06d}",
+                "post_at": params.get("post_at"), "message": {"text": params.get("text", "")}}
+
+
+def schedule(text="later", as_bot=True, channel=CHANNEL, lead=3600, **prov):
+    p = {"cls": "B-h" if as_bot else "A", **prov}
+    return {"method": "chat.scheduleMessage", "params": {"channel": channel, "text": text, "post_at": int(time.time()) + lead},
+            "as_bot": as_bot, "provenance": p}
+
+
+def test_s1_schedule_runs_through_the_core_and_binds_post_at(env):
+    env.transport = ScheduleTransport()
+    out = env.hook(schedule(comm_id="20261031-prompt"))
+    assert out["permissionDecision"] == "ask"
+    assert "scheduled for" in out["permissionDecisionReason"] or "отложено на" in out["permissionDecisionReason"]
+    ti = env.approve(schedule(comm_id="20261031-sched"))
+    res = env.send(ti)
+    assert res.data["ok"] and len(env.transport.calls) == 1
+    row = next(r for r in env.journal.ops() if r["op_id"] == res.op_id)
+    assert row["method"] == "chat.scheduleMessage" and row["outcome"] == "ok"
+    assert row["slack_ts"].startswith("Q")                                  # scheduled_message_id is the outcome id
+    assert '"scheduled_for"' in row["provenance_json"]
+    assert any("scheduled send" in w for w in res.verdict.warnings)
+    ti2 = env.approve(schedule(comm_id="20261031-sched2"))
+    ti2["params"]["post_at"] += 600                                        # a later time = a different operation
+    refused(env, ti2, "decision_mismatch")
+    assert len(env.transport.calls) == 1
+
+
+def test_s2_schedule_refusals_before_any_call(env):
+    env.transport = ScheduleTransport()
+    missing = schedule(comm_id="s-missing"); del missing["params"]["post_at"]
+    assert "missing_params" in env.hook(missing)["permissionDecisionReason"]
+    assert "schedule_in_past" in env.hook(schedule(comm_id="s-past", lead=10))["permissionDecisionReason"]
+    assert "schedule_too_far" in env.hook(schedule(comm_id="s-far", lead=200 * 86400))["permissionDecisionReason"]
+    ti = schedule(comm_id="s-mismatch", scheduled_for=int(time.time()) + 7200)
+    assert "schedule_mismatch" in env.hook(ti)["permissionDecisionReason"]
+    assert env.transport.calls == []
+
+
+def test_s3_schedule_through_the_mcp_server_keeps_attribution(env):
+    from atlas_slack import gateway
+    import json as _json
+    mock = MagicMock()
+    mock.api_call.return_value = {"ok": True, "channel": CHANNEL, "scheduled_message_id": "Q1", "post_at": 1,
+                                  "message": {"text": "x"}}
+    ti = env.approve(schedule(comm_id="20261031-mcp", as_bot=False))
+    with patch("atlas_slack.gateway.get_client", return_value=mock):
+        out = gateway.slack_api(**ti)
+    assert mock.api_call.call_count == 1
+    assert "journal: op" in out and "· comm 20261031-mcp" in out
+    sent = mock.api_call.call_args.kwargs["params"]
+    assert _json.loads(sent["blocks"])[-1]["type"] == "context"             # the person-voice footer survives the core

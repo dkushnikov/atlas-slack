@@ -167,13 +167,17 @@ def test_slack_api_chat_update_user_mode_injects_attribution(mock_webclient):
     assert blocks[1]["elements"][0]["text"] == f":blue_heart: <@{ATLAS_BOT_USER_ID}>"
 
 
-def test_slack_api_chat_schedule_message_user_mode_injects_attribution(mock_webclient):
+def test_slack_api_chat_schedule_message_needs_a_decision_since_0_5_3(mock_webclient):
+    """chat.scheduleMessage is a core send now: without a hook decision it refuses before any call
+    (the attribution footer on the core path is asserted in test_v2_slice::test_s3)."""
+    from fastmcp.exceptions import ToolError
+    import pytest as _pytest
     mock_webclient.api_call.return_value = {"ok": True, "scheduled_message_id": "Q1"}
-    slack_api("chat.scheduleMessage", {"channel": "C1", "post_at": 9999999, "text": "later"})
-
-    call_params = mock_webclient.api_call.call_args.kwargs["params"]
-    assert json.loads(call_params["blocks"])[-1]["type"] == "context"
-    assert json.loads(call_params["blocks"])[-1]["elements"][0]["text"] == f":blue_heart: <@{ATLAS_BOT_USER_ID}>"
+    with _pytest.raises(ToolError) as e:
+        import time as _time
+        slack_api("chat.scheduleMessage", {"channel": "C1", "post_at": int(_time.time()) + 3600, "text": "later"})
+    assert "no_decision" in str(e.value)
+    assert mock_webclient.api_call.call_count == 0
 
 
 def test_slack_api_chat_post_ephemeral_user_mode_injects_attribution(mock_webclient):

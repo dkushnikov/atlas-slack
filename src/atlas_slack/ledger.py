@@ -129,7 +129,8 @@ def _last_draft(body: str) -> str | None:
     start = heads[-1].end()
     nxt = _ANY_HEADING.search(body, start)
     section = body[start:nxt.start()] if nxt else body[start:]
-    return section.strip("\n")
+    section = section.strip("\n")
+    return section if section.strip() else None        # an empty draft section is no text
 
 
 def find_ledger(directories, comm_id: str | None) -> LedgerEntry | None:
@@ -171,44 +172,85 @@ def find_ledger(directories, comm_id: str | None) -> LedgerEntry | None:
     return found
 
 
+_T = {
+    "ru": {
+        "unavailable": "ledger: ⚠ папка ledger недоступна",
+        "unread": "ledger: ⚠ не прочитан (comm {comm})",
+        "not_found": "ledger: ⚠ не найден (comm {comm})",
+        "dropped": "ledger: ⚠ помечен dropped · {name}",
+        "pass_blocks": "ledger: ✅ аудит Cicero{when} (текст в blocks — не сверен) · {name}",
+        "pass_unbound": "ledger: ✅ аудит Cicero{when} (текст не сверен) · {name}",
+        "pass_no_draft": "ledger: ⚠ аудит{when}, но в ledger нет текста (## Draft) · {name}",
+        "pass_other_text": "ledger: ⚠ аудит{when} был для другого текста — допиши Draft vN и перепроверь · {name}",
+        "pass": "ledger: ✅ аудит Cicero{when} · {name}",
+        "skipped": "ledger: ☑ аудит пропущен ({audit}) · {name}",
+        "other": "ledger: ⚠ аудит: {audit} · {name}",
+        "none": "ledger: ⚠ аудита нет · {name}",
+        "dup": " (+{n} файл с тем же comm_id)",
+    },
+    "en": {
+        "unavailable": "ledger: ⚠ ledger folder unavailable",
+        "unread": "ledger: ⚠ unreadable (comm {comm})",
+        "not_found": "ledger: ⚠ not found (comm {comm})",
+        "dropped": "ledger: ⚠ marked dropped · {name}",
+        "pass_blocks": "ledger: ✅ Cicero audit{when} (blocks-only text, not compared) · {name}",
+        "pass_unbound": "ledger: ✅ Cicero audit{when} (text not compared) · {name}",
+        "pass_no_draft": "ledger: ⚠ audit{when}, but the ledger holds no text (## Draft) · {name}",
+        "pass_other_text": "ledger: ⚠ audit{when} was for a different text — append Draft vN and re-audit · {name}",
+        "pass": "ledger: ✅ Cicero audit{when} · {name}",
+        "skipped": "ledger: ☑ audit skipped ({audit}) · {name}",
+        "other": "ledger: ⚠ audit: {audit} · {name}",
+        "none": "ledger: ⚠ no audit · {name}",
+        "dup": " (+{n} file with the same comm_id)",
+    },
+}
+
+
 def prompt_lines(profile, comm_id: str | None, text: str | None = None) -> list[str]:
     """Lines for the approval prompt: `ledger: …` and `intention: …`; [] when no ledger dir is set.
 
     `text` is what the card shows; a passed audit counts only when it equals the ledger's
     last `## Draft` section (whitespace-insensitive) — an edited text reads ⚠ until re-audited.
+    Wording follows the profile language; the shape `ledger: <✅|☑|⚠> <text> · <file>` is fixed
+    (the approval-card mod parses it).
     """
+    t = _T.get(getattr(profile, "language", "en"), _T["en"])
     try:
         dirs = ledger_dirs(profile)
         if not dirs or not comm_id:
             return []
         if not any(d.is_dir() for d in dirs):
-            return ["ledger: ⚠ папка ledger недоступна"]
+            return [t["unavailable"]]
         entry = find_ledger(dirs, comm_id)
     except Exception:            # never let a ledger quirk reach the hook (a `~user` path, a bad fs)
-        return [f"ledger: ⚠ не прочитан (comm {comm_id})"]
+        return [t["unread"].format(comm=comm_id)]
     if entry is None:
-        return [f"ledger: ⚠ не найден (comm {comm_id})"]
+        return [t["not_found"].format(comm=comm_id)]
     name = Path(entry.path).name
     if entry.duplicates:
-        name += f" (+{entry.duplicates} файл с тем же comm_id)"
+        name += t["dup"].format(n=entry.duplicates)
     state = entry.audit_state
+    when = f" {entry.audit_at}" if entry.audit_at else ""
+    v = dict(name=name, when=when, audit=entry.audit, comm=comm_id)
     if (entry.status or "").lower() == "dropped":
-        lines = [f"ledger: ⚠ помечен dropped · {name}"]
+        lines = [t["dropped"].format(**v)]
     elif state == "passed":
-        when = f" {entry.audit_at}" if entry.audit_at else ""
-        match = entry.text_matches(text)
-        if match is False:
-            lines = [f"ledger: ⚠ аудит{when} был для другого текста — допиши Draft vN и перепроверь · {name}"]
-        elif match is None and text is not None:
-            lines = [f"ledger: ⚠ аудит{when}, но в ledger нет текста (## Draft) · {name}"]
+        if text == "":
+            lines = [t["pass_blocks"].format(**v)]       # a blocks-only send carries no plain text to compare
+        elif text is None:
+            lines = [t["pass_unbound"].format(**v)]
+        elif entry.draft is None:
+            lines = [t["pass_no_draft"].format(**v)]
+        elif entry.text_matches(text) is False:
+            lines = [t["pass_other_text"].format(**v)]
         else:
-            lines = [f"ledger: ✅ аудит Cicero{when} · {name}"]
+            lines = [t["pass"].format(**v)]
     elif state == "skipped":
-        lines = [f"ledger: ☑ аудит пропущен ({entry.audit}) · {name}"]
+        lines = [t["skipped"].format(**v)]
     elif state == "other":
-        lines = [f"ledger: ⚠ аудит: {entry.audit} · {name}"]
+        lines = [t["other"].format(**v)]
     else:
-        lines = [f"ledger: ⚠ аудита нет · {name}"]
+        lines = [t["none"].format(**v)]
     if entry.intention:
         lines.append(f"intention: {entry.intention}")
     return lines

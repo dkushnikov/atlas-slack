@@ -58,7 +58,12 @@ READ_METHODS = frozenset({
     "users.lookupByEmail", "users.profile.get",
 })
 
-CORE_METHODS = frozenset({"chat.postMessage"})
+# chat.scheduleMessage joined the core 2026-10-31 (slice 2, part 1): `post_at` is bound into the
+# decision as `scheduled_for`; the message leaves at post_at without a fresh look (migration rule
+# п. 15, until Reception) — the prompt says so.
+CORE_METHODS = frozenset({"chat.postMessage", "chat.scheduleMessage"})
+SCHEDULE_MIN_LEAD_S = 60          # Slack refuses post_at in the past; a minute keeps clock skew out
+SCHEDULE_MAX_LEAD_S = 120 * 86400  # Slack: up to 120 days ahead
 LOCAL_METHODS = frozenset({"_rights", "_comm_id"})
 
 # Writes the 0.4.0 gate auto-allows by conscious classification (issue #1):
@@ -81,7 +86,7 @@ REFUSED_METHODS = {
 # transitional path in this slice.
 KNOWN_WRITE_ROWS = {
     **{m: 1 for m in (
-        "chat.update", "chat.delete", "chat.scheduleMessage", "chat.deleteScheduledMessage",
+        "chat.update", "chat.delete", "chat.deleteScheduledMessage",
         "chat.postEphemeral", "chat.meMessage", "chat.unfurl", "chat.startStream",
         "files.uploadV2", "files.completeUploadExternal", "files.delete", "files.comments.delete",
         "reminders.add", "conversations.setTopic", "conversations.setPurpose", "conversations.rename",
@@ -530,14 +535,14 @@ def evaluate(method: str, params: dict | None, as_bot: bool, provenance: dict | 
         if face == "library":
             return _base(ctx, REFUSE, "not_in_slice",
                          f"{method}: transitional method — the library face executes only the v2 slice "
-                         "(chat.postMessage and reads)")
+                         "(chat.postMessage, chat.scheduleMessage and reads)")
         if method in TRANSITIONAL_ALLOWED_WRITES:
             return _base(ctx, ALLOW, "transitional_allowed", f"{method}: {eff.note} (transitional)")
         text = open_reason(params) if method == "conversations.open" else f"Slack write: {method}"
         return _base(ctx, NEEDS_HUMAN, "transitional",
                      f"{text} (transitional — not yet under the v2 core; today's gate semantics)")
 
-    # ------------------------------------------------------- core: chat.postMessage
+    # ------------------------------------------- core: chat.postMessage / chat.scheduleMessage
     return _evaluate_send(ctx, provenance, face=face, manifest=manifest, journal=journal,
                           journal_error=journal_error, now=now, record_sighting=record_sighting)
 
@@ -568,7 +573,28 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
 
     channel = params.get("channel")
     if not isinstance(channel, str) or not channel:
-        ctx.refuse("missing_params", "chat.postMessage needs `channel` (id string)")
+        ctx.refuse("missing_params", f"{ctx.method} needs `channel` (id string)")
+    if ctx.method == "chat.scheduleMessage":
+        post_at = params.get("post_at")
+        try:
+            post_at_f = float(post_at) if post_at is not None and not isinstance(post_at, bool) else None
+        except (TypeError, ValueError):
+            post_at_f = None
+        if post_at_f is None:
+            ctx.refuse("missing_params", "chat.scheduleMessage needs `post_at` (epoch seconds)")
+        elif post_at_f < now + SCHEDULE_MIN_LEAD_S:
+            ctx.refuse("schedule_in_past", f"post_at {int(post_at_f)} is not at least {SCHEDULE_MIN_LEAD_S} s ahead — "
+                                           "send now with chat.postMessage instead")
+        elif post_at_f > now + SCHEDULE_MAX_LEAD_S:
+            ctx.refuse("schedule_too_far", f"post_at {int(post_at_f)} is more than 120 days ahead (Slack limit)")
+        if post_at_f is not None:
+            if prov.scheduled_for is None:
+                prov.scheduled_for = post_at_f
+            elif abs(prov.scheduled_for - post_at_f) > 1:
+                ctx.refuse("schedule_mismatch", f"provenance scheduled_for {int(prov.scheduled_for)} ≠ params.post_at "
+                                                f"{int(post_at_f)}")
+        ctx.warnings.append("scheduled send — leaves at post_at without a fresh look (migration rule A12.15, "
+                            "until Reception)")
     t_ch = prov.target.get("channel")
     if t_ch and channel and t_ch != channel:
         ctx.refuse("target_mismatch", f"provenance target {t_ch} ≠ params.channel {channel}")
