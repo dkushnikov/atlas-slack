@@ -1,0 +1,3 @@
+{
+  "modules": ["./approval.tsx"]
+}

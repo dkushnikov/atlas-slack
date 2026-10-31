@@ -47,6 +47,7 @@ _FIELDS = {
     "workspace_id", "person_user_id", "bot_user_id", "person_bot_dm_id", "token_sources",
     "policy_path", "policy_sha256", "journal_dir", "decision_adapters", "freeze",
     "decision_fallback", "decision_permission_modes", "language", "names", "resolve_names",
+    "ledger_dir",
 }
 LANGUAGES = ("en", "ru")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -73,6 +74,7 @@ class Profile:
     policy_path: str | None = None
     policy_sha256: str | None = None
     journal_dir: str = ""
+    ledger_dir: str | None = None    # the /comms ledger folder; env ATLAS_SLACK_LEDGER_DIR overrides (0.5.2)
     decision_adapters: list = field(default_factory=lambda: ["cc-hook"])
     freeze: bool = False
     decision_fallback: bool = False  # pre-registered decision row instead of an updatedInput token
@@ -101,7 +103,8 @@ class Profile:
             "person_user_id": self.person_user_id, "bot_user_id": self.bot_user_id,
             "person_bot_dm_id": self.person_bot_dm_id, "token_sources": dict(self.token_sources),
             "policy_path": self.policy_path, "policy_sha256": self.policy_sha256,
-            "journal_dir": self.journal_dir, "decision_adapters": list(self.decision_adapters),
+            "journal_dir": self.journal_dir, "ledger_dir": self.ledger_dir,
+            "decision_adapters": list(self.decision_adapters),
             "freeze": self.freeze, "decision_fallback": self.decision_fallback,
             "decision_permission_modes": list(self.decision_permission_modes),
             "language": self.language, "names": dict(self.names), "resolve_names": self.resolve_names,
@@ -126,7 +129,7 @@ def _validate(raw: dict, prof: Profile) -> None:
     if unknown:
         errs.append(f"unknown profile keys: {sorted(unknown)}")
     for k in ("workspace_id", "person_user_id", "bot_user_id", "person_bot_dm_id",
-              "policy_path", "policy_sha256", "journal_dir"):
+              "policy_path", "policy_sha256", "journal_dir", "ledger_dir"):
         v = raw.get(k)
         if v is None:
             continue

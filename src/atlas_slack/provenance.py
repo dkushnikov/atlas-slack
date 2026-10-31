@@ -131,6 +131,9 @@ class Provenance:
         for k in ("comm_id", "prepared_by", "context"):
             if d.get(k) is not None and not isinstance(d[k], str):
                 raise ProvenanceError(f"{k} must be a string")
+        cid = d.get("comm_id")
+        if cid is not None and (len(cid) > 128 or any(ch < " " for ch in cid)):
+            raise ProvenanceError("comm_id must be one line of at most 128 printable characters")
         target = d.get("target") or {}
         if not isinstance(target, dict):
             raise ProvenanceError("target must be an object {channel, users, is_mpim}")

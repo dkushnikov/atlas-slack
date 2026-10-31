@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "atlas-slack",
-      "description": "Full Slack Web API access — slack_api gateway for all 200+ methods + slack_download; dual token (user / bot), attribution footer, structural errors, PreToolUse write gate (contract v1.3).",
+      "description": "Full Slack Web API access — slack_api gateway for all 200+ methods + slack_download; dual token (user / bot), attribution footer, structural errors, PreToolUse write gate, v2 door core: provenance, 30-min one-time decisions, write-ahead journal (contract v1.5).",
       "source": "./plugins/atlas-slack",
       "category": "productivity"
     }

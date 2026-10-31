@@ -101,6 +101,12 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
         lines.append("checks: " + ", ".join(f"{k}={checks[k]}" for k in sorted(checks)))
     if v.policy_state == "builtin":
         lines.append(t["no_policy"])
+    # The ledger behind the comm_id: the audit pass as a fact the door read, not a claim (0.5.2).
+    from atlas_slack import ledger
+    try:
+        lines.extend(ledger.prompt_lines(profile, p.get("comm_id"), text if isinstance(text, str) else None))
+    except Exception:            # the ledger line is a courtesy; the prompt must always be issued
+        lines.append("ledger: ⚠ не прочитан")
     names.save()
     tech = [f"class {v.cls}", f"policy {v.policy_version}"]
     if p.get("comm_id"):

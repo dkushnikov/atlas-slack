@@ -40,6 +40,7 @@ READ_METHODS = frozenset({
     "blocks.validate",
     "bookmarks.list",
     "canvases.getContent",
+    "agents.conversations.listViews", "agents.conversations.getCanvas",
     "chat.getPermalink", "chat.scheduledMessages.list",
     "conversations.history", "conversations.replies", "conversations.info",
     "conversations.list", "conversations.members",
@@ -70,6 +71,10 @@ TRANSITIONAL_ALLOWED_WRITES = frozenset({
 # auth.revoke matched the old `auth.` read prefix and was AUTO-ALLOWED in 0.4.0.
 REFUSED_METHODS = {
     "auth.revoke": "row 8 — revoking the token is app management, not done through the door",
+    # slack_sdk 3.41 → 3.46 (2026-10-31, Strategy п. 11): app / workspace management stays outside the door.
+    "admin.users.getExpiration": "row 8 — admin API (org-level token), not a door surface",
+    "apps.user.connection.requestAuth": "row 8 — app-connection management is the Demiurge path",
+    "apps.user.connection.bulkUpdate": "row 8 — app-connection management is the Demiurge path",
 }
 
 # Known writes → A3 row, for verdict text and `_rights`; executed on the
@@ -81,10 +86,14 @@ KNOWN_WRITE_ROWS = {
         "files.uploadV2", "files.completeUploadExternal", "files.delete", "files.comments.delete",
         "reminders.add", "conversations.setTopic", "conversations.setPurpose", "conversations.rename",
         "canvases.create", "canvases.edit", "canvases.delete", "views.publish",
+        "agents.conversations.setCanvasContent",   # content into the agent conversation (3.45)
     )},
     **{m: 3 for m in ("reactions.add", "reactions.remove", "pins.add", "pins.remove",
                       "bookmarks.add", "bookmarks.edit", "bookmarks.remove")},
-    **{m: 4 for m in ("conversations.open", "conversations.join", "conversations.leave",
+    **{m: 4 for m in ("agents.conversations.create", "agents.conversations.archive",       # agent-view structure (3.45)
+                      "agents.conversations.setView", "agents.conversations.removeView",
+                      "agents.conversations.setCommands", "agents.conversations.setProperties",
+                      "conversations.open", "conversations.join", "conversations.leave",
                       "conversations.invite", "conversations.kick", "conversations.create",
                       "conversations.archive", "conversations.unarchive", "conversations.inviteShared",
                       "conversations.acceptSharedInvite", "usergroups.create", "usergroups.update",

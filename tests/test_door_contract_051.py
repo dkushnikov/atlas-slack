@@ -217,3 +217,25 @@ def test_journal_open_does_not_stall_behind_a_reader(env):
     assert _t.monotonic() - t0 < 2.0
     assert j2._conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 1048576
     peer.execute("COMMIT"); peer.close(); j2.close()
+
+
+def test_sdk_346_methods_are_in_the_registry():
+    """slack_sdk 3.41 → 3.46 added 16 WebClient methods; every one has a row (Strategy п. 11)."""
+    from atlas_slack import policy as pm
+    from slack_sdk import WebClient
+    new = ["admin.users.getExpiration", "agents.conversations.archive", "agents.conversations.create",
+           "agents.conversations.getCanvas", "agents.conversations.listViews", "agents.conversations.removeView",
+           "agents.conversations.setCanvasContent", "agents.conversations.setCommands",
+           "agents.conversations.setProperties", "agents.conversations.setView", "agents.sessions.rename",
+           "agents.sessions.setStatus", "apps.user.connection.bulkUpdate", "apps.user.connection.requestAuth",
+           "blocks.validate", "canvases.getContent"]
+    names = pm._registry_names()
+    missing = [m for m in new if m not in names]
+    assert missing == [], missing
+    for m in new:
+        assert hasattr(WebClient, m.replace(".", "_")), m          # the installed SDK knows them (≥ 3.46)
+    assert pm.classify("admin.users.getExpiration", {}).route == "refused"
+    assert pm.classify("apps.user.connection.requestAuth", {}).route == "refused"
+    assert not pm.classify("agents.conversations.listViews", {}).write
+    assert pm.KNOWN_WRITE_ROWS["agents.conversations.setCanvasContent"] == 1
+    assert pm.KNOWN_WRITE_ROWS["agents.conversations.create"] == 4
