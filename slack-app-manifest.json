@@ -1,5 +1,4 @@
 {
-    "_comment": "Slack app manifest for Atlas Slack — paste it at https://api.slack.com/apps → Create New App → From a manifest. The app and its bot user are named Atlas (the partner the door is built for); rename them if your partner has another name. These are the scopes the door's reads and its six core sends use; a method outside them fails with `missing_scope`, which names the scope to add. Deliberately absent: chat:write.customize (the door refuses username/icon overrides), incoming-webhook (a send path outside the door), commands, event subscriptions and Socket Mode (not the door's function).",
     "display_information": {
         "name": "Atlas",
         "description": "Your AI partner in Slack — reads and sends for one person through atlas-slack, with a decision per operation.",
