@@ -43,7 +43,6 @@ claude --plugin-dir plugins/atlas-slack plugin details atlas-slack   # → Hooks
 
 # Private-token scan (also in CI and in the pre-push hook)
 python3 tests/test_no_private_tokens.py            # tracked files
-python3 tests/test_no_private_tokens.py --all      # + the working history under docs/plans, docs/decisions, KNOWN_ISSUES.md
 git config core.hooksPath .githooks                # once per clone: pre-push scans the outgoing commit messages too
 ```
 

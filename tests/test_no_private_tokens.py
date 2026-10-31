@@ -10,9 +10,7 @@ Run: python3 tests/test_no_private_tokens.py [--commits origin/main..HEAD] [--al
      python3 -m pytest -q tests/test_no_private_tokens.py
      python3 tests/test_no_private_tokens.py --hash <token>     # the hash to add to the list
 
-`HISTORY_PATHS` are working documents written before the public release (plans,
-the issue history). They are scanned only with `--all`: moving or scrubbing them is
-a release decision, not a test failure.
+Every tracked text file is scanned (`--all` is accepted and changes nothing since 0.7.0).
 """
 import hashlib
 import re
@@ -36,7 +34,7 @@ TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё][A-Za-zА-Яа-яЁё0-9'’-]{2,}
 # URL allowance: the maintainer's GitHub handle is public in repository URLs.
 URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?(?:@[A-Za-z0-9_./-]+)?")
 
-HISTORY_PATHS = ("docs/plans/", "docs/decisions/", "KNOWN_ISSUES.md")
+HISTORY_PATHS: tuple[str, ...] = ()      # nothing is exempt: the working history lives in the maintainer's vault, not here
 SKIP_NAMES = ("private-token-hashes.txt", "test_no_private_tokens.py")
 BINARY_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".lock")
 
