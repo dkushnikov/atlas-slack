@@ -157,7 +157,7 @@ class Door:
                 v.decision, v.reason = REFUSE, "no_decision_adapter"
             core.record_call(self.profile, method, "refused", as_bot=as_bot, caller="door", error_code=v.reason)
             return DoorResult(v)
-        if self._own_transport and eff.route == "transitional":
+        if self._own_transport and eff.route == "transitional" and eff.write:
             # a transitional-allowed write under the default transport: the same identity check as a core send
             problems = identity.verify(self.profile, as_bot, self.transport)
             if problems:

@@ -25,7 +25,12 @@ jobs:
 
       - name: Private tokens in the pushed commit messages
         if: github.event_name == 'push'
-        run: python3 tests/test_no_private_tokens.py --commits "${{ github.event.before }}..${{ github.sha }}"
+        run: |
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            python3 tests/test_no_private_tokens.py --commits "${{ github.sha }}"      # a new branch: every message it carries
+          else
+            python3 tests/test_no_private_tokens.py --commits "${{ github.event.before }}..${{ github.sha }}"
+          fi
 
       - name: Plugin manifest
         run: |

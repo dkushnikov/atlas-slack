@@ -49,8 +49,12 @@ def _bot_dm(profile, person_user_id: str) -> str | None:
 
 
 def cmd_init(args) -> int:
-    from atlas_slack.profile import config_dir, load_profile
+    from atlas_slack.profile import _NAME_RE, config_dir, load_profile
     name = args.profile or os.environ.get("ATLAS_SLACK_PROFILE") or "default"
+    if not _NAME_RE.match(name):
+        print(f"profile name {name!r} is not valid: letters, digits, `_ . -`, up to 64 chars, no path parts "
+              "(the same rule load_profile applies)", file=sys.stderr)
+        return 2
     path = config_dir() / f"{name}.yaml"
     if path.exists() and not args.force:
         print(f"{path} exists — edit it, or run init --force to rewrite it", file=sys.stderr)

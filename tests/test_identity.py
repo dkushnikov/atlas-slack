@@ -329,3 +329,43 @@ def test_transitional_ask_carries_a_non_default_language(isolated_door_dirs, mon
     env.write(language="ru")
     out = env.hook(react)
     assert out["permissionDecision"] == "ask" and out["permissionDecisionReason"].endswith("\nlang: ru")
+
+
+# ------------------------------------------------ Codex code review 2026-10-31 — regressions pinned
+
+def test_transitional_read_by_legacy_heuristic_is_not_identity_checked(check_on, monkeypatch, isolated_door_dirs):
+    """An unregistered read-like name falls to the transitional path with write=False: reads are not attributed."""
+    from atlas_slack.gateway import slack_api
+    from atlas_slack.policy import classify
+    eff = classify("team.accessLogs", {})
+    assert eff.route == "transitional" and eff.write is False
+    env = _env("atlas-like", isolated_door_dirs, monkeypatch)
+    client = MagicMock()
+    client.api_call.side_effect = lambda method, params=None, **kw: (
+        _ids_auth(False, team_id="T0OTHER") if method == "auth.test" else {"ok": True, "logins": []})
+    with patch("atlas_slack.gateway.get_client", return_value=client):
+        slack_api("team.accessLogs", {}, as_bot=False)
+    assert [c.args[0] for c in client.api_call.call_args_list] == ["team.accessLogs"]
+
+
+def test_transitional_identity_refusal_writes_one_calls_row(check_on, monkeypatch, isolated_door_dirs):
+    from atlas_slack.gateway import slack_api
+    env = _env("atlas-like", isolated_door_dirs, monkeypatch)
+    client = MagicMock()
+    client.api_call.side_effect = lambda method, params=None, **kw: (
+        _ids_auth(env.ids, True, team_id="T0OTHER") if method == "auth.test" else {"ok": True})
+    with patch("atlas_slack.gateway.get_client", return_value=client):
+        with pytest.raises(Exception):
+            slack_api("reactions.add", {"channel": "C1", "timestamp": "1.2", "name": "ok"}, as_bot=True)
+    rows = [r for r in env.journal.calls() if r["method"] == "reactions.add"]
+    assert [r["error_code"] for r in rows] == ["identity_mismatch"]       # exactly one row, the refusal
+
+
+def test_init_refuses_an_invalid_profile_name(monkeypatch, isolated_door_dirs, capsys):
+    from atlas_slack import __main__ as cli
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: pytest.fail("auth.test must not run for a bad name"))
+    for bad in ("bad name", "../escaped", ""):
+        with pytest.raises(SystemExit) as e:
+            cli.main(["init", "--profile", bad] if bad else ["init", "--profile", "-x"])
+        assert e.value.code == 2
+    assert "not valid" in capsys.readouterr().err

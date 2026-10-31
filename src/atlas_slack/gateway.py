@@ -266,14 +266,17 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         raise _slack_error(verdict.reason, verdict.message + (" (transitional path)" if verdict.transitional else ""))
     extra: list[str] = []
     t0 = time.monotonic()
+    observed = False
     try:
         client = get_client(as_bot=as_bot)
-        if effect.route == "transitional":
-            # a transitional write runs under whatever token is there: same identity check as a core send
+        if effect.route == "transitional" and effect.write:
+            # a transitional WRITE runs under whatever token is there: the same identity check as a core send;
+            # a read that only fell to this path by the legacy heuristic is not attributed and not checked
             problems = identity.verify(profile, as_bot, _sdk_transport(client))
             if problems:
                 code = identity.code_for(problems)
                 _observe(profile, method, as_bot, "refused", code, t0)
+                observed = True
                 raise _slack_error(code, "; ".join(problems) + core.IDENTITY_HINTS[code])
         if method in DEFAULT_LIMIT_METHODS and "limit" not in call_params:
             call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
@@ -288,7 +291,8 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
             raise _slack_error(code) from e
         raise _slack_error("exception", str(e)) from e
     except ToolError:
-        _observe(profile, method, as_bot, "error", "tool_error", t0)
+        if not observed:                 # an identity refusal above already has its row
+            _observe(profile, method, as_bot, "error", "tool_error", t0)
         raise
     except Exception as e:
         _observe(profile, method, as_bot, "error", "exception", t0)

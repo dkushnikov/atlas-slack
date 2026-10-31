@@ -1,10 +1,12 @@
 #!/bin/sh
 # Refuse a push that would publish private tokens (paths, names, session trailers, workspace ids)
 # in tracked files or in the outgoing commit messages. Enable once per clone:
+# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha> (Codex review 2026-10-31: the
+# third field is the remote REF; reading the sha there scanned an empty range on every ordinary push).
 #   git config core.hooksPath .githooks
 set -e
 repo=$(git rev-parse --show-toplevel)
-while read -r local_ref local_sha remote_sha _; do
+while read -r local_ref local_sha remote_ref remote_sha; do
   if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
     range="$local_sha"
   else
