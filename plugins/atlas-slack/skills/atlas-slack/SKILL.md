@@ -31,6 +31,7 @@ Pick the row that matches your intent. The right column is what to call. Three l
 | List members of a channel | `slack_api("conversations.members", {"channel": "C..."})` |
 | Check unread state of a channel/DM | `slack_api("conversations.info", {"channel": "..."})` — shows `last_read` / `unread` |
 | Post a message in the bot's voice | `slack_api("chat.postMessage", {...}, as_bot=True)` |
+| Message the person in the bot's voice (a report, a check-in) | `slack_api("chat.postMessage", {"channel": "<person_bot_dm_id>", ...}, as_bot=True)` — core send; `slack_api("_rights")` → `identities:` names the bot DM, or says `none yet`: then `channel` = the person's **user id** (`U…`, from the same line, or from `slack_api("auth.test")` under the user token when it shows `?`), Slack opens the bot's DM on that first post (the journal records the DM it opened), and afterwards `python3 -m atlas_slack init --force` records its id in a file profile (an env-only profile: the person sets `ATLAS_SLACK_PERSON_BOT_DM_ID`); if that first post's outcome comes back `unknown`, `_reconcile` cannot read a user id as a conversation — the person looks and resolves it by hand |
 | Post a message in the person's voice, with the bot's mark | `slack_api("chat.postMessage", {...}, as_bot=False)` |
 | React to a message | `slack_api("reactions.add", {"channel": "C...", "timestamp": "<ts>", "name": "thumbsup"}, as_bot=True)` |
 | Pin / unpin | `slack_api("pins.add" / "pins.remove", {"channel": "C...", "timestamp": "<ts>"}, as_bot=True)` |

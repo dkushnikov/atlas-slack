@@ -4,7 +4,7 @@ Slack for one person and their agent, with a decision per operation: one gateway
 
 ## Quick reference
 
-- **Type:** plugin (MCP server + two PreToolUse hooks + a Claude Code mod + one skill)
+- **Type:** plugin (MCP server + two PreToolUse hooks + a Claude Code mod + two skills: `atlas-slack`, `atlas-slack-setup`)
 - **Marketplace:** `atlas-slack` (`.claude-plugin/marketplace.json`) → plugin `plugins/atlas-slack`
 - **MCP tools:** 2 — `slack_api` (gateway for every Web API method, plus the local pseudo-methods `_rights`, `_comm_id`, `_reconcile`) and `slack_download` (file bytes)
 - **Stack:** Python 3.12+, FastMCP, slack_sdk, PyYAML · the mod in TypeScript (`hooks/approval.tsx`, bun tests)

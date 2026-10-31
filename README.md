@@ -82,19 +82,19 @@ The official Slack MCP cannot be the transport because it runs under one identit
 | `slack_download(file_id)` | file bytes to local disk — the JSON API never serves them |
 | the approval card | a Claude Code mod (2.1.314+) that replaces the stock JSON permission dialog for a send with one readable card; older Claude Code: the stock dialog with the same question inside |
 | two PreToolUse hooks | the write gate (a thin adapter over the door's policy engine) and a Bash gate that blocks `curl slack.com/api/…` and keychain reads |
-| the skill | what the agent reads on every Slack task: method table, voices, the sending contract |
+| two skills | `atlas-slack` — what the agent reads on every Slack task: method table, voices, the sending contract; `atlas-slack-setup` — installs, checks and repairs the setup from a session |
 | `Door` | the library face for scripts and jobs, with the same policy and journal |
 
 ## How to use this
 
-You need Python 3.12+, Claude Code (2.1.314 or newer for the card), and the right to create a Slack app in your workspace. One interpreter for everything: the `python3` on the PATH of the shell Claude Code starts from runs the MCP server and the hooks, so `pip install` into that one.
+Short form; the full procedure with Slack's menu names, the `doctor` output explained and a refusal table is [`docs/setup.md`](docs/setup.md), and, once the plugin is installed (step 3), the `atlas-slack-setup` skill walks a Claude Code session through the rest («set up atlas-slack»). You need Python 3.12+, Claude Code (2.1.314 or newer for the card), and the right to create a Slack app in your workspace. One interpreter for everything: the `python3` on the PATH of the shell Claude Code starts from runs the MCP server and the hooks, so `pip install` into that one.
 
-**1. Create your Slack app.** https://api.slack.com/apps → **Create New App** → **From a manifest** → paste [`slack-app-manifest.json`](slack-app-manifest.json). The app and its bot user are named **Atlas**; rename them if you like. Install it to the workspace and copy both tokens: **User OAuth Token** (`xoxp-…`, your voice and your reads) and **Bot User OAuth Token** (`xoxb-…`, the bot's voice). The manifest carries the scopes the door's reads and its six sends use — and deliberately no `chat:write.customize`, no incoming webhook, no commands, no events. A method outside the granted scopes fails with `missing_scope`, which names the scope to add.
+**1. Create your Slack app.** https://api.slack.com/apps → **Create New App** → **From a manifest** → paste [`slack-app-manifest.json`](slack-app-manifest.json). The app and its bot user are named **Atlas**; rename them if you like. Install it to the workspace and copy both tokens: **User OAuth Token** (`xoxp-…`, your voice and your reads) and **Bot User OAuth Token** (`xoxb-…`, the bot's voice). The manifest carries the scopes for the door's reads, its six sends, opening a DM, reactions, pins, reminders, your status and DND — and deliberately no `chat:write.customize`, no incoming webhook, no commands, no events. A method outside the granted scopes fails with `missing_scope`, which names the scope to add.
 
 **2. Tokens in the shell environment** — not in `settings.json` (`${VAR}` in the plugin's `.mcp.json` resolves from the shell only). Open a new terminal, or `source` the file, before step 4, and start Claude Code from a shell that has them:
 
 ```bash
-# ~/.zshenv (or the profile your Claude Code sessions inherit)
+# ~/.zshenv — or the start-up file of the shell your Claude Code sessions inherit
 export SLACK_USER_TOKEN="xoxp-..."
 export SLACK_BOT_TOKEN="xoxb-..."
 ```
@@ -103,7 +103,7 @@ export SLACK_BOT_TOKEN="xoxb-..."
 
 ```bash
 git clone https://github.com/dkushnikov/atlas-slack.git
-pip install -e ./atlas-slack          # the hooks and the server import the checkout's src/
+python3 -m pip install -e ./atlas-slack   # the hooks and the server import the checkout's src/
 
 claude plugin marketplace add ./atlas-slack
 claude plugin install atlas-slack@atlas-slack
@@ -115,7 +115,7 @@ claude plugin install atlas-slack@atlas-slack
 python3 -m atlas_slack init           # → ~/.config/atlas-slack/default.yaml
 ```
 
-It asks Slack who the two tokens are and writes the profile: `workspace_id`, `person_user_id` (you), `bot_user_id` (the bot — the attribution target), the bot's DM with you. No secrets in the file — token variable *names* only. It refuses to overwrite a profile and refuses tokens that are not one person + one bot in one workspace. Several profiles (two workspaces, a test app): `init --profile <name>` and `ATLAS_SLACK_PROFILE=<name>` in the environment Claude Code runs in — a project's `.claude/settings.json` → `env` works; the hook and the MCP server must see the same value.
+It asks Slack who the two tokens are and writes the profile: `workspace_id`, `person_user_id` (you), `bot_user_id` (the bot — the attribution target), and the bot's DM with you when one exists. No secrets in the file — token variable *names* only. It refuses to overwrite a profile (`--force` rewrites the identity fields, and the token variable names when you pass them, and keeps the other keys) and refuses tokens that are not one person + one bot in one workspace. A second workspace or a test app has its own token variables: `init --profile acme --user-var ACME_SLACK_USER --bot-var ACME_SLACK_BOT` (a non-default profile that names fewer than both is refused — it would copy the first workspace's identities or one of its variables), then `ATLAS_SLACK_PROFILE=acme` in the environment Claude Code runs in — a project's `.claude/settings.json` → `env` works; the hook and the MCP server must see the same value.
 
 **5. Check, then send one message.**
 
@@ -123,7 +123,7 @@ It asks Slack who the two tokens are and writes the profile: `workspace_id`, `pe
 python3 -m atlas_slack doctor
 ```
 
-Both tokens against the profile, the scope count, hygiene flags, and the rights table. Then start a Claude Code session, ask it to read a channel, then to post one message **to you, in the bot's voice** — the bot's DM with you is the one channel the bot is always in (`init` recorded it); you will see the card.
+Both tokens against the profile, the scope count, hygiene flags, the rights table — and one last line, `next: send — …`, that names the channel for your first message (the bot's DM with you, or your own user id when no DM exists yet: Slack opens it on the first post). Any other `next:` code names the one thing to fix first. Then start a Claude Code session, ask it to read a channel, then to post one message **to you, in the bot's voice** — you will see the card.
 
 ## Defaults, and what is yours to set
 
