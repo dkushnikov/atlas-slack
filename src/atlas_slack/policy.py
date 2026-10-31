@@ -848,6 +848,8 @@ def rights_table(profile, policy: PolicyState | None = None, journal_ok: bool | 
         f"({policy.state}{': ' + policy.error if policy.error else ''}), digest {policy.digest[:12] or '-'}",
         f"freeze: {'YES — every write refuses' if profile.freeze else 'no'}"
         + (f" · profile errors: {'; '.join(profile.errors)}" if profile.errors else ""),
+        f"identities: person {profile.person_user_id or '? (slack_api(\"auth.test\") under the user token tells)'} · bot {profile.bot_user_id or '?'} · bot DM "
+        + (profile.person_bot_dm_id or "none yet — a bot message to the person goes to their user id, Slack opens the DM"),
         f"capabilities: user token {yn(caps.user_token)} · bot token {yn(caps.bot_token)} · journal "
         f"{yn(caps.journal)}{' (' + journal_path + ')' if journal_path else ''} · decision adapters "
         f"{', '.join(caps.decision_adapters) or 'none'} · notary none · identity source none",

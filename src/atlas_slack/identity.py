@@ -17,11 +17,21 @@ check runs under exactly the client the send would use.
 
 from __future__ import annotations
 
+import hashlib
 import os
 
 ENV_SKIP = "ATLAS_SLACK_IDENTITY_CHECK"   # "0" switches the check off — the test suite's level 1
 
-_VERIFIED: dict[tuple[str, str], dict] = {}
+_VERIFIED: dict[tuple[str, str, str], dict] = {}
+
+
+def _key(profile, as_bot: bool) -> tuple[str, str, str]:
+    """Profile name, token variable, and a fingerprint of the token VALUE — a token replaced in a
+    long-lived process (a new Door after a rotation) is verified again (Codex review 2026-10-31).
+    The fingerprint is a truncated sha256; the token itself is never stored."""
+    var = profile.token_var(as_bot)
+    tok = os.environ.get(var) or ""
+    return (profile.name, var, hashlib.sha256(tok.encode("utf-8")).hexdigest()[:16])
 
 
 def reset_cache() -> None:
@@ -64,14 +74,14 @@ def problems(auth_test: dict, profile, as_bot: bool, *, advise: bool = False) ->
 
 
 def verify(profile, as_bot: bool, call) -> list[str]:
-    """Check the token of a voice once per process; cached by (profile name, token variable).
+    """Check the token of a voice once per process; cached by (profile name, token variable, token fingerprint).
 
     Returns the problems; `[]` means verified. A failed `auth.test` (exception, non-dict,
     `ok: false`) is reported as one problem and is not cached, so the next write tries again.
     """
     if os.environ.get(ENV_SKIP) == "0":
         return []                       # level-1 tests (no Slack); never set in production
-    key = (profile.name, profile.token_var(as_bot))
+    key = _key(profile, as_bot)
     cached = _VERIFIED.get(key)
     if cached is not None:
         return problems(cached, profile, as_bot)
@@ -94,4 +104,4 @@ def code_for(problems: list[str]) -> str:
 
 def verified(profile, as_bot: bool) -> dict | None:
     """The cached `auth.test` answer for a voice, when this process has verified it."""
-    return _VERIFIED.get((profile.name, profile.token_var(as_bot)))
+    return _VERIFIED.get(_key(profile, as_bot))

@@ -313,11 +313,23 @@ class Journal:
             raise JournalUnavailable(f"{type(e).__name__}: {e}") from e
 
     def record_outcome(self, op_id: str, outcome: str, slack_ts: str | None = None,
-                       error_code: str | None = None) -> None:
+                       error_code: str | None = None, channel: str | None = None) -> None:
+        """`channel` = the conversation Slack reports in the response. A post addressed to a user id
+        (`U…`, the bot's first message to the person) lands in a DM (`D…`): the row's target then
+        records that DM, so an edit or a reconcile by `ts` + channel finds it (spec-verifier 2026-10-31)."""
         if outcome not in ("ok", "error", "unknown"):
             raise ValueError(f"bad outcome {outcome!r}")
         self._exec("UPDATE ops SET outcome=?, outcome_at=?, slack_ts=?, error_code=? WHERE op_id=?",
                    (outcome, time.time(), slack_ts, error_code, op_id))
+        if outcome == "ok" and isinstance(channel, str) and channel:
+            row = self._exec("SELECT target_json FROM ops WHERE op_id=?", (op_id,)).fetchone()
+            try:
+                tgt = json.loads(row["target_json"] or "{}") if row else {}
+            except ValueError:
+                tgt = {}
+            if isinstance(tgt, dict) and tgt.get("channel") != channel:
+                tgt = {**tgt, "addressed_to": tgt.get("channel"), "channel": channel}
+                self._exec("UPDATE ops SET target_json=? WHERE op_id=?", (json.dumps(tgt, ensure_ascii=False), op_id))
 
     def mark_unknown(self, op_id: str, error_code: str | None = None) -> None:
         self.record_outcome(op_id, "unknown", error_code=error_code)
@@ -347,7 +359,7 @@ class Journal:
                 tgt = json.loads(r["target_json"] or "{}")
             except ValueError:
                 continue
-            if isinstance(tgt, dict) and tgt.get("channel") == channel:
+            if isinstance(tgt, dict) and channel in (tgt.get("channel"), tgt.get("addressed_to")):
                 return dict(r)
         return None
 

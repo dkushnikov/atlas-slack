@@ -340,7 +340,8 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
     result = SendResult(verdict=verdict, data=data, op_id=prov.op_id, final_params=final,
                         comm_id=prov.comm_id, comm_minted=comm_minted, prior=prior)
     try:
-        journal.record_outcome(prov.op_id, "ok", slack_ts=outcome_id(data))
+        journal.record_outcome(prov.op_id, "ok", slack_ts=outcome_id(data),
+                               channel=data.get("channel") if isinstance(data.get("channel"), str) else None)
     except JournalUnavailable as e:
         result.journal_error = str(e)
         if block_mode:
@@ -466,7 +467,8 @@ def _composite_comment(result: SendResult, params: dict, upload_data: dict, prov
     result.child_data = data
     result.child_outcome = "ok"
     try:
-        journal.record_outcome(child_id, "ok", slack_ts=outcome_id(data))
+        journal.record_outcome(child_id, "ok", slack_ts=outcome_id(data),
+                               channel=data.get("channel") if isinstance(data.get("channel"), str) else None)
     except JournalUnavailable as e:
         result.child_outcome = "journal"
         result.child_error = f"posted (ts={data.get('ts')}) but not journaled: {e}"
