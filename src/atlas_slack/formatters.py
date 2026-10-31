@@ -11,7 +11,7 @@ from typing import Callable
 # === Error hints (§10) ===
 ERROR_HINTS: dict[str, str] = {
     "channel_not_found": "DM channel IDs are per-viewer; try conversations.open from the correct token side.",
-    "not_in_channel": "The bot isn't a member; invite it via conversations.invite or post in the person's voice.",
+    "not_in_channel": "The posting voice is not a member of that channel: the bot's voice needs a person to invite it in Slack (/invite; conversations.invite needs channels:manage), your voice needs you to join — then the same call, same voice.",
     "missing_scope": "Token lacks the scope; check auth.test for granted scopes.",
     "cannot_dm_bot": "Target is a bot account — DMs not supported.",
     "is_archived": "Channel is archived; unarchive first or pick another.",

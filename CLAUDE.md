@@ -69,7 +69,7 @@ Two PreToolUse hooks ship inside the plugin:
 
 The trust posture is tamper-evident, not tamper-proof: the decision secret and the journal are readable by the same OS user.
 
-## Current state — 0.7.0
+## Current state — 0.7.1
 
 The six message sends run through the core: `chat.postMessage`, `scheduleMessage`, `update`, `postEphemeral`, `meMessage`, `files.uploadV2` (`policy.CORE_METHODS`). Everything else is on the labelled *transitional* path (compact card, today's gate semantics, no journal op, no binding): reactions, pins, delete, deleteScheduledMessage, structure (`conversations.*`, usergroups), and the row-1 writes that are not message sends. Identity is checked at the first write per token (0.7.0). The library face executes reads and core sends only; `needs-human` there refuses (`no_decision_adapter`). Unknown future method names still fall to the transitional heuristic (`KNOWN_ISSUES.md` GATE-003); the effect registry grows as names appear (slack_sdk 3.46 added 16 rows).
 

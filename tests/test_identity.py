@@ -686,6 +686,77 @@ def test_doctor_decide_and_send_lines_carry_the_variable_flags_for_an_undeclared
     assert nxt.startswith("next: send") and "init --profile acme --force --user-var <VAR> --bot-var <VAR> records it" in nxt
 
 
+def test_doctor_checks_the_first_session_scopes_after_identity(monkeypatch, isolated_door_dirs, capsys):
+    from atlas_slack import __main__ as cli
+    monkeypatch.setenv("ATLAS_SLACK_WORKSPACE_ID", WS)
+    monkeypatch.setenv("ATLAS_SLACK_PERSON_USER_ID", PERSON)
+    full = {False: ["channels:history", "chat:write"], True: ["chat:write", "im:write"]}
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(as_bot), "_scopes": full[as_bot]})
+    rc, nxt, out = _doctor(cli, capsys)
+    assert rc == 0 and nxt.startswith("next: send") and "2 scopes" in out and "missing for the first session" not in out
+    # the person token lacks chat:write → add-scope names the variable and the scope
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(as_bot), "_scopes": ["channels:history"] if not as_bot else full[True]})
+    rc, nxt, out = _doctor(cli, capsys)
+    assert rc == 1 and nxt.startswith("next: add-scope — SLACK_USER_TOKEN: the app lacks chat:write") and "✗ missing for the first session: chat:write" in out
+    # the bot token lacks im:write (no DM can be opened)
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(as_bot), "_scopes": full[False] if not as_bot else ["chat:write"]})
+    rc, nxt, _ = _doctor(cli, capsys)
+    assert nxt.startswith("next: add-scope — SLACK_BOT_TOKEN: the app lacks im:write")
+    # no x-oauth-scopes header: unknown is said, never claimed as checked, and does not block send
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(as_bot), "_scopes": []})
+    rc, nxt, out = _doctor(cli, capsys)
+    assert rc == 0 and nxt.startswith("next: send") and "scopes unknown" in out and "scopes: unknown" in out
+    # a wrong app outranks a missing scope: the bot token of another workspace → decide, not add-scope
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(as_bot, team_id="T0OTHER" if as_bot else WS), "_scopes": [] if as_bot else ["channels:history"]})
+    rc, nxt, _ = _doctor(cli, capsys)
+    assert nxt.startswith("next: decide — SLACK_BOT_TOKEN")
+
+
+def test_doctor_names_every_scope_gap_and_outranks_it_with_token_verdicts(monkeypatch, isolated_door_dirs, capsys):
+    from atlas_slack import __main__ as cli
+    monkeypatch.setenv("ATLAS_SLACK_WORKSPACE_ID", WS)
+    monkeypatch.setenv("ATLAS_SLACK_PERSON_USER_ID", PERSON)
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(as_bot), "_scopes": ["chat:write"]})
+    rc, nxt, _ = _doctor(cli, capsys)
+    assert nxt.startswith("next: add-scope — SLACK_USER_TOKEN: the app lacks channels:history; SLACK_BOT_TOKEN: the app lacks im:write")
+    assert "put the new token(s) into SLACK_USER_TOKEN, SLACK_BOT_TOKEN" in nxt
+    # an unset bot variable outranks the person token's scope gap
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {"ok": False, "error": "SLACK_BOT_TOKEN is not set in the environment"} if as_bot else {**_auth(False), "_scopes": ["chat:write"]})
+    rc, nxt, _ = _doctor(cli, capsys)
+    assert nxt.startswith("next: set-token — SLACK_BOT_TOKEN")
+    # a user token in the bot slot outranks it too
+    monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: {**_auth(False), "_scopes": ["chat:write"]})
+    rc, nxt, _ = _doctor(cli, capsys)
+    assert nxt.startswith("next: swap-tokens")
+
+
+def test_auth_reads_the_scope_header_case_insensitively(monkeypatch):
+    import slack_sdk
+    from atlas_slack import __main__ as cli
+    from atlas_slack.profile import load_profile
+
+    class Resp:
+        def __init__(self, headers):
+            self.data = {"ok": True, "team_id": WS, "user_id": PERSON}
+            self.headers = headers
+
+    class Client:
+        headers = {}
+
+        def __init__(self, token, retry_handlers=None):
+            assert token == "xoxp-test"
+
+        def auth_test(self):
+            return Resp(Client.headers)
+    monkeypatch.setattr(slack_sdk, "WebClient", Client)
+    monkeypatch.setenv("SLACK_USER_TOKEN", "xoxp-test")
+    profile = load_profile("default")
+    Client.headers = {"X-OAuth-Scopes": "chat:write, channels:history"}
+    assert cli._auth(False, profile)["_scopes"] == ["channels:history", "chat:write"]
+    Client.headers = {}
+    assert cli._auth(False, profile)["_scopes"] == []
+
+
 def test_doctor_for_a_missing_named_profile_does_not_show_the_default_tokens_as_its_own(monkeypatch, isolated_door_dirs, capsys):
     from atlas_slack import __main__ as cli
     monkeypatch.setattr(cli, "_auth", lambda as_bot, profile: pytest.fail("the default variables are not acme's"))

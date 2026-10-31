@@ -17,6 +17,11 @@ SUBCOMMANDS = ("init", "doctor")
 _VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")       # the same rule profile.py applies to token_sources
 
 
+# The scopes docs/setup.md § 6 needs (a channel read, a reply in the person's voice, a bot post to the person
+# that opens the DM). doctor checks these and no more: a method outside them fails with missing_scope.
+FIRST_SCOPES = {False: ("channels:history", "chat:write"), True: ("chat:write", "im:write")}
+
+
 def _auth(as_bot: bool, profile) -> dict:
     """`auth.test` under the profile's token variable for a voice; the dict answer or {ok: False, error}."""
     from slack_sdk import WebClient
@@ -32,7 +37,8 @@ def _auth(as_bot: bool, profile) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     data = resp.data if hasattr(resp, "data") else dict(resp)
-    data["_scopes"] = sorted(s for s in (resp.headers.get("x-oauth-scopes") or "").split(",") if s)
+    headers = {str(k).lower(): v for k, v in (resp.headers or {}).items()}   # header names are case-insensitive
+    data["_scopes"] = sorted(s.strip() for s in str(headers.get("x-oauth-scopes") or "").split(",") if s.strip())
     return data
 
 
@@ -155,7 +161,7 @@ def cmd_init(args) -> int:
     return 0
 
 
-NEXT_CODES = ("init", "fix-profile", "set-token", "new-token", "retry", "swap-tokens", "decide", "frozen",
+NEXT_CODES = ("init", "fix-profile", "set-token", "new-token", "retry", "swap-tokens", "decide", "add-scope", "frozen",
               "fix-policy", "fix-journal", "send")
 
 
@@ -168,7 +174,8 @@ def cmd_doctor(args) -> int:
     variables → swap-tokens · then per token slot, the person's first and the bot's second: variable unset →
     set-token · Slack rejects the token → new-token · a transient failure (an exception type, a rate limit, Slack
     internal_error) → retry · the wrong kind of token in the slot → swap-tokens · ids disagree with the profile →
-    decide · then freeze → frozen · policy invalid → fix-policy · journal unavailable or no decision adapter →
+    decide · after both slots, a first-session scope missing on either token (FIRST_SCOPES; skipped and said when
+    Slack sent no scope header) → add-scope · then freeze → frozen · policy invalid → fix-policy · journal unavailable or no decision adapter →
     fix-journal · else send. Exit 0 only on send.
     """
     from atlas_slack import identity
@@ -228,6 +235,7 @@ def cmd_doctor(args) -> int:
         print(f"\nnext: {code} — {why}")
         return 1
     auth: dict[bool, dict] = {as_bot: _auth(as_bot, profile) for as_bot in (False, True)}
+    lacking: list[tuple[str, list[str]]] = []
     if all(d.get("ok") for d in auth.values()) and auth[False].get("user_id") == auth[True].get("user_id") \
             and auth[False].get("bot_id") == auth[True].get("bot_id"):
         first("swap-tokens", f"{profile.token_var(False)} and {profile.token_var(True)} hold the SAME token — the user token "
@@ -254,7 +262,7 @@ def cmd_doctor(args) -> int:
         mark = "✗" if mism else "✓"
         print(f"{label} token ({var}): {mark} team {data.get('team_id')} ({data.get('team', '?')}) · "
               f"user {data.get('user_id')} ({data.get('user', '?')})" + (f" · bot_id {data['bot_id']}" if data.get("bot_id") else "")
-              + f" · {len(data.get('_scopes', []))} scopes")
+              + (f" · {len(data['_scopes'])} scopes" if data.get("_scopes") else " · scopes unknown"))
         for f in found:
             print(f"  {'✗' if f in mism else '·'} {f}")
         kind = [f for f in mism if "bot_id" in f and ("sits in" in f or "not a bot token" in f)]
@@ -266,6 +274,18 @@ def cmd_doctor(args) -> int:
         for sc in ("chat:write.customize", "incoming-webhook"):
             if sc in data.get("_scopes", []):
                 print(f"  · scope {sc} is granted — the door refuses what it enables; drop it from the app (hygiene)")
+        if not data.get("_scopes"):
+            print("  · scopes: unknown (no x-oauth-scopes header in Slack's answer) — the first-session scopes are not checked")
+        else:
+            need = [sc for sc in FIRST_SCOPES[as_bot] if sc not in data["_scopes"]]
+            if need:
+                print(f"  ✗ missing for the first session: {', '.join(need)}")
+                lacking.append((var, need))
+    if lacking:
+        # after both slots: a wrong app (swap-tokens / decide) outranks a scope the right app lacks; one line names every gap
+        gaps = "; ".join(f"{var}: the app lacks {', '.join(need)}" for var, need in lacking)
+        first("add-scope", f"{gaps} — add under OAuth & Permissions → Scopes, Reinstall to Workspace, "
+                           f"put the new token(s) into {', '.join(var for var, _ in lacking)}, doctor again")
     if profile.freeze:
         first("frozen", f"freeze: true in {profile.path or 'the profile'} — every write refuses until it is false (the person's call)")
     pol = load_policy(profile)

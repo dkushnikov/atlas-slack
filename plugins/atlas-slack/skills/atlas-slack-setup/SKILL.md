@@ -1,6 +1,6 @@
 ---
 name: atlas-slack-setup
-description: Set up, check or repair the atlas-slack plugin for the person in this session — create the Slack app from the manifest, place the tokens, write the profile with `init`, verify with `doctor`, run the first send, read a refusal. Use when the person says "set up atlas-slack", "install the Slack door", "create the Slack app", "configure the profile", "doctor says …", "identity_mismatch", "missing_scope", "the gate asks on every call", "add a second workspace / profile", "update the plugin", or when any slack_api call fails before reaching Slack with a profile, token or identity code. Not for sending or reading Slack — that is the `atlas-slack` skill.
+description: Set up, check or repair the atlas-slack plugin for the person in this session — create the Slack app from the manifest, place the tokens, write the profile with `init`, verify with `doctor`, run the first send, read a refusal. Use when the person says "set up atlas-slack", "install the Slack door", "create the Slack app", "configure the profile", "doctor says …", "identity_mismatch", "missing_scope", "the gate asks on every call", "add a second workspace / profile", "update the plugin", when any slack_api call fails before reaching Slack with a profile, token, identity or decision code (`no_decision`, `permission_mode_unsafe`), or when Slack answers `not_in_channel`. Not for sending or reading Slack — that is the `atlas-slack` skill.
 ---
 
 # atlas-slack — setup and repair
@@ -26,7 +26,7 @@ claude plugin list 2>/dev/null | grep -A4 "atlas-slack@"
 ```
 
 - `python3` below 3.12 → the person installs Python 3.12+ (python.org or Homebrew) and starts Claude Code from a shell where it is `python3`; then come back here.
-- The import fails → `python3 -m pip install -e <clone>` with that same `python3`. If pip answers `externally-managed-environment` (Homebrew or Debian Python): `python3 -m pip install --break-system-packages -e <clone>` (the interpreter is the person's own), or a virtualenv whose `bin` is first on the PATH of the shell that starts Claude Code. Re-run the import line.
+- The import fails → `python3 -m pip install -e <clone>` with that same `python3`. If pip answers `externally-managed-environment` (Homebrew or Debian Python), ask the person which of two: a virtualenv (`python3 -m venv ~/.atlas-slack-venv && ~/.atlas-slack-venv/bin/python -m pip install -e <clone>`; Debian/Ubuntu without `python3-venv` → the person installs that package first; then the person adds `export PATH="$HOME/.atlas-slack-venv/bin:$PATH"` to the same start-up file as the tokens — this session's shell cannot see it: a new terminal and a restart follow, step 3's «new terminal», and the re-entry lands here, on step 0, where the import line runs again), or `python3 -m pip install --break-system-packages -e <clone>` on the system interpreter when it is their own install — then re-run the import line now. Never run `--break-system-packages` unasked.
 - No `atlas-slack@` block → `claude plugin marketplace add <clone>` then `claude plugin install atlas-slack@atlas-slack`; a session restart will be needed (remember it for step 4).
 - A block with `Status: ✘ disabled` → `claude plugin enable atlas-slack@atlas-slack`; a restart will be needed (remember it for step 4).
 
@@ -49,9 +49,10 @@ Read the whole output to the person in one or two sentences (which profile, both
 | `retry — …` | transient (network, rate limit): `doctor` again in a minute; if it persists, the person checks the variable's value for stray characters → `doctor` again |
 | `swap-tokens — …` | the variables hold the wrong kind of token: the line says which — swapped values → the person swaps them; the same token in both → the person pastes the missing one (`xoxp-` user, `xoxb-` bot) → step 3's «new terminal» part |
 | `decide — …` | the token and the profile disagree: ask the person which is right, then do the half of the line that applies (the `init … --force` the line names for the token — `<VAR>` placeholders: the person names the two variables, step 3; a fresh variable for the profile) |
+| `add-scope — <VAR>: …` | the app lacks a scope the first session uses: the person adds the named scope(s) under OAuth & Permissions → Scopes, reinstalls (the tokens change), updates the variable → step 3's «new terminal» part |
 | `frozen — …` | the person's emergency stop. Say so. If they want it lifted, the person sets `freeze: false` in the file; otherwise stop here |
 | `fix-policy — …` / `fix-journal — …` | quote the line; the fix is in the file or directory it names |
-| `send — …` | consistent, with the channel for the first message: step 4 — unless the hello was already sent and the line names the bot DM: then the setup is done, no second hello. If `·` lines under the token lines said fields are unset (an env-only profile), the identity check compares only what is set — say so |
+| `send — …` | consistent, with the channel for the first message: step 4 — a `· scopes: unknown` line under a token line means the first-session scopes were not checked (no scope header from Slack): say so, it is not a pass — unless the hello was already sent and the line names the bot DM: then the setup is done, no second hello. If `·` lines under the token lines said fields are unset (an env-only profile), the identity check compares only what is set — say so |
 
 After every fix, `doctor` again. A `✗` or `·` line that is not the `next:` line is context, not an instruction — mention it once (the `·` hygiene scopes `chat:write.customize` / `incoming-webhook`: suggest dropping them from the app).
 
@@ -78,7 +79,7 @@ A non-default profile must name **both** its variables (upper-case letters, digi
 
 Point the person to `docs/setup.md` § 1 and § 2 and say the gist: create the app from `slack-app-manifest.json` (in the clone), install it to the workspace, copy the two tokens, put the two `export` lines into the start-up file of the shell they launch Claude Code from. Before they start: the app and its bot user are named Atlas and can be renamed; a workspace with app approval makes the install wait for the admin. A second workspace or a test app gets its own variable names (`ACME_SLACK_USER`, `ACME_SLACK_BOT`); step 2 records them. Tokens stay in the shell file, never in `settings.json` (it is often committed).
 
-**New terminal.** Variables set now are not in this session's environment; no command from inside the session can add them. When the person says the file is saved, they do three things. They open a new terminal. They restart Claude Code from it, in the same project. They type «set up atlas-slack: run doctor --profile <name>, variables <USER_VAR> and <BOT_VAR>» (the real names; `default` and the variables may be omitted when they are the defaults) — that re-enters this skill at step 1 with the same profile and the same variables.
+**New terminal.** Variables set now are not in this session's environment; no command from inside the session can add them. When the person says the file is saved, they do three things. They open a new terminal. They restart Claude Code from it, in the same project. They type «set up atlas-slack: run doctor --profile <name>, variables <USER_VAR> and <BOT_VAR>» (the real names; `default` and the variables may be omitted when they are the defaults) — that re-enters this skill at step 0 (the two check lines, then `doctor`) with the same profile and the same variables.
 
 ## Step 4 — the first send, then the DM id
 
@@ -97,6 +98,8 @@ The `atlas-slack` skill handles the two Slack calls. Before the send, `slack_api
 | `token_unavailable` | the server's environment lacks the variable | step 3, then restart |
 | `profile_missing` / `profile_invalid` | `ATLAS_SLACK_PROFILE` names a missing file, an invalid name, or the file has a bad key / a token-shaped value | `doctor --profile <name>` → its `next:` line |
 | `profile_mismatch` | the hook and the server see different `ATLAS_SLACK_PROFILE` | one place for the variable; restart |
+| `permission_mode_unsafe` | the session's permission mode cannot show the card (`bypassPermissions`, `dontAsk`) | the person restarts the session in the default mode (or `auto`). The refusal names the other way, `decision_permission_modes` in the profile — that is the person's hand, never yours |
+| `no_decision` | the send reached the server without the hook's decision: the plugin's hooks did not run (`disableAllHooks` in the person's settings, or a managed Claude Code with `allowManagedHooksOnly`), or the hook ran and failed — the prompt before it said «gate error» or «gate unavailable» | a «gate …» prompt: step 0's import line and pip; otherwise the person checks their settings for `disableAllHooks`, then asks their Claude Code admin; nothing was sent |
 | `identity_mismatch` | a token is not the workspace / person / bot of the profile | `doctor` → `decide` or `swap-tokens`; then restart the session |
 | `identity_unverified` | no usable `auth.test` answer | call once more; if it persists, `doctor` (revoked token, network) |
 | `missing_scope: <name>` | the app lacks a scope | the person adds it under OAuth & Permissions and **reinstalls**; the tokens change (as of 2026-10) → step 3 |
@@ -105,6 +108,7 @@ The `atlas-slack` skill handles the two Slack calls. Before the send, `slack_api
 | `version_skew` | the MCP server runs another plugin version than the hook (after an update) | restart the session |
 | `decision_expired` | the card waited more than 30 minutes | the agent asks again — nothing was sent |
 | `outcome_unknown` | Slack's answer was lost | the agent runs `_reconcile`; never a blind retry (the `atlas-slack` skill) |
+| `not_in_channel` (from Slack) | the voice that posted is not a member of that channel | the agent's voice: the person invites it in Slack (`/invite @<agent name>`; `conversations.invite` through the door needs `channels:manage`, not in the manifest); the person's voice: they join the channel; then the same call, same voice — never switch voice to get past it |
 
 ## Updating
 

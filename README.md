@@ -2,7 +2,7 @@
 
 **Slack for Claude Code, with checks you set for yourself. The access an agent gets anyway — plus a declared voice on every message, a card before anything leaves, a local record, and recovery instead of blind retries.**
 
-> **Status: 0.7.0.** Works with a plain Claude Code setup and a Slack workspace of your own — no AI-partner framework, no other service. The door core has run the author's Slack since 2026-10-28; the six message sends go through it; identity is checked at connect. Named after [Atlas Seed](https://github.com/dkushnikov/atlas-seed) (an identity layer for an AI partner) because it was built for that partner; it does not need it.
+> **Status: 0.7.1.** Works with a plain Claude Code setup and a Slack workspace of your own — no AI-partner framework, no other service. The door core has run the author's Slack since 2026-10-28; the six message sends go through it; identity is checked at connect. Named after [Atlas Seed](https://github.com/dkushnikov/atlas-seed) (an identity layer for an AI partner) because it was built for that partner; it does not need it.
 
 ---
 
@@ -59,7 +59,7 @@ The last one needs the journal and the policy; the first six work with the defau
 
 **Does it need an AI partner, Atlas Seed, anything else?** No. Python 3.12+, Claude Code, Slack. It was built for a partner with an identity of its own, and the card reads naturally when the agent *is* such a partner. A plain Claude Code session gets the same checks.
 
-**Does it need a Slack app? Can I even create one?** Yes, and usually yes. Every Slack integration runs under some app's tokens; the official MCP hides that behind Slack's own app, this one gives you your own, created from the manifest in this repo in about five minutes. That is what makes the two voices possible (a user token and an agent token of one app), keeps the tokens on your machine, and keeps the app *internal* in Slack's terms, outside the rate limits Slack applies to distributed apps. Slack lets workspace members create apps by default; where an admin has turned on app approval, the install waits for their one-time approval, creation itself usually does not. One app per person is the path this release takes. A shared app for a whole team would need an OAuth sign-in flow for each person's user token, and that is not shipped yet.
+**Does it need a Slack app? Can I even create one?** Yes, and usually yes. Every Slack integration runs under some app's tokens; the official MCP hides that behind Slack's own app, this one gives you your own, created from the manifest in this repo in about five minutes. That is what makes the two voices possible (a user token and an agent token of one app), keeps the tokens on your machine, and keeps the app *internal* in Slack's terms, outside the rate limits Slack applies to distributed apps. Slack lets workspace members create apps by default; where an admin has turned on app approval, the install waits for their one-time approval, creation itself usually does not. One app per person is the path this release takes, and it is what gives each person their own agent: its name, the channels it was invited to, its DM with you. A single app shared by a team would be one agent user for everyone — the same name under every colleague's messages, one set of channel memberships read by every laptop — and would need an OAuth sign-in flow for each person's user token, which is not shipped. Not the same product.
 
 **Why not the official Slack MCP as the transport?** It runs under one identity, the OAuth user's. One identity means no second voice, no mark as a choice, nothing in message metadata for recovery, and nothing a script can import. Your own app is what the two voices cost.
 
@@ -173,7 +173,7 @@ When an agent writes to your colleagues, three things have to stay true at every
 
 ## Contributing
 
-The most useful contribution now is **installing it**: create the app, run `init` and `doctor`, send one message to yourself, and open an issue with what was unclear, what refused you, and what you could not find afterwards in the journal. PRs on documentation and tests are welcome; the policy model and the contract change through issues first.
+The most useful contribution now is **installing it**: create the app, run `init` and `doctor`, send one message to yourself, and open an issue with what was unclear, what refused you, and what you could not find afterwards in the journal. PRs on documentation and tests are welcome; the policy model and the contract change through issues first. Working on your own copy: `docs/setup.md` § Your own copy — one checkout is the plugin.
 
 ## License
 
