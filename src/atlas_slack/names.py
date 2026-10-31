@@ -1,4 +1,4 @@
-"""Display names for the approval prompt — ids → "#channel", "DM владелец↔Atlas", "Atlas".
+"""Display names for the approval prompt — ids → "#channel", "DM Ann↔Atlas", "Atlas".
 
 Resolution order per id: profile `names` override → cache (`<journal_dir>/names.json`,
 TTL 24 h) → one live read (`conversations.info` / `users.info`, reads — row 0)

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """End-to-end smoke test for atlas-slack plugin against a real Slack workspace.
 
-Sandbox: a colleague's DM (per ~/.claude/projects/.../memory/feedback/feedback_elvira-slack-smoke-test.md).
+Sandbox: the DM of one colleague who agreed to receive test messages (SMOKE_DM_USER, required).
 
 Covers:
   1. Auth + identity (auth.test) — token reachable, identity resolved
-  2. Read path: conversations.history on a colleague DM
-  3. Preparation-layer: conversations.open with a colleague (Slack ID)
-  4. Lookup: users.info on a colleague
-  5. Bot-token write: post message as Atlas to a colleague DM
-  6. User-token write with attribution: post as the owner with auto-injected footer
+  2. Read path: conversations.history on the sandbox DM
+  3. Preparation-layer: conversations.open with the sandbox user (Slack ID)
+  4. Lookup: users.info on the sandbox user
+  5. Bot-token write: post message as the bot to the sandbox DM
+  6. User-token write with attribution: post as the person with auto-injected footer
   7. Reaction: reactions.add bot-side
   8. Cleanup: delete the test messages
   9. Hook enforcement: invoke bash with curl slack.com/api/* — must be blocked
@@ -20,18 +20,19 @@ Run:
 
 Requires:
   SLACK_USER_TOKEN, SLACK_BOT_TOKEN in env (loaded from ~/.zshenv).
-  SANDBOX_USER env var (default U0COLLEAG1).
+  SMOKE_DM_USER env var — the sandbox colleague's Slack user id (no default).
 """
 import argparse
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-SANDBOX_ID = os.environ.get("SANDBOX_USER", "U0COLLEAG1")
+SANDBOX_USER = os.environ.get("SMOKE_DM_USER") or sys.exit("SMOKE_DM_USER is required: the sandbox colleague's Slack user id")
 TEST_MARKER = "[atlas-slack smoke test — safe to ignore]"
 
 
@@ -87,10 +88,10 @@ def test_auth(user: WebClient, bot: WebClient) -> list[Result]:
 
 
 def test_user_lookup(user: WebClient) -> Result:
-    r = Result(f"users.info on a colleague ({SANDBOX_ID})")
+    r = Result(f"users.info on the sandbox user ({SANDBOX_USER})")
     try:
-        u = user.users_info(user=SANDBOX_ID)
-        if u.get("ok") and u.get("user", {}).get("id") == SANDBOX_ID:
+        u = user.users_info(user=SANDBOX_USER)
+        if u.get("ok") and u.get("user", {}).get("id") == SANDBOX_USER:
             return r.passed(f"name={u['user'].get('real_name')}")
         return r.failed(f"unexpected response: {u}")
     except SlackApiError as e:
@@ -98,9 +99,9 @@ def test_user_lookup(user: WebClient) -> Result:
 
 
 def test_open_dm(user: WebClient) -> tuple[Result, str | None]:
-    r = Result("conversations.open with a colleague (preparation-layer)")
+    r = Result("conversations.open with the sandbox user (preparation-layer)")
     try:
-        resp = user.conversations_open(users=SANDBOX_ID)
+        resp = user.conversations_open(users=SANDBOX_USER)
         ch_id = resp.get("channel", {}).get("id")
         if ch_id:
             return r.passed(f"channel_id={ch_id}"), ch_id
@@ -110,7 +111,7 @@ def test_open_dm(user: WebClient) -> tuple[Result, str | None]:
 
 
 def test_read(user: WebClient, channel: str) -> Result:
-    r = Result(f"conversations.history on a colleague DM ({channel})")
+    r = Result(f"conversations.history on the sandbox DM ({channel})")
     try:
         h = user.conversations_history(channel=channel, limit=3)
         n = len(h.get("messages", []))
@@ -139,7 +140,7 @@ def test_post_as_atlas(bot: WebClient, channel: str) -> tuple[Result, str | None
 
 
 def test_post_as_person(user: WebClient, channel: str) -> tuple[Result, str | None]:
-    r = Result("chat.postMessage as the owner (user token, attribution expected)")
+    r = Result("chat.postMessage as the person (user token, attribution expected)")
     # We bypass atlas-slack gateway here and call slack_sdk directly to avoid
     # double-injection. Instead we test that the *plugin* injects attribution
     # when called via slack_api — see separate plugin test (test_gateway.py).
@@ -165,7 +166,7 @@ def test_hook_blocks_curl() -> Result:
     """Invoke the plugin's PreToolUse Bash hook directly with a curl payload."""
     r = Result("PreToolUse Bash hook blocks curl slack.com/api/*")
     hook = os.path.expanduser(
-        "<repo>/plugins/atlas-slack/hooks/bash-slack-gate.py"
+        str(Path(__file__).resolve().parent.parent / "plugins/atlas-slack/hooks/bash-slack-gate.py")
     )
     if not os.path.exists(hook):
         return r.failed(f"hook not found: {hook}")
@@ -206,8 +207,8 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="don't auto-delete posted test messages")
     args = ap.parse_args()
 
-    print("atlas-slack smoke E2E — sandbox: a colleague DM")
-    print(f"  user-id target: {SANDBOX_ID}")
+    print("atlas-slack smoke E2E — sandbox: the SMOKE_DM_USER DM")
+    print(f"  user-id target: {SANDBOX_USER}")
     print(f"  cleanup: {'OFF (--keep)' if args.keep else 'ON'}")
     print()
 

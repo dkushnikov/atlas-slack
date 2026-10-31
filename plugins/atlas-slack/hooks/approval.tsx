@@ -3,7 +3,7 @@
  *
  * Why: the stock permission dialog for an MCP tool prints the whole tool input as
  * JSON (method, params, provenance with the decision token) and cuts the hook's
- * human text to three lines, so the person approves a blob (the owner, 2026-10-31).
+ * human text to three lines, so the person approves a blob (seen live, 2026-10-31).
  *
  * What: on `tool.check` for `slack_api`, when the engine's verdict is `ask` and the
  * call is a core send (chat.postMessage, chat.scheduleMessage, chat.update, chat.postEphemeral,
@@ -68,7 +68,7 @@ const L: Record<Lang, Record<string, string>> = {
     mOther: 'Slack write: {method}',
     denyNo: 'atlas-slack: отклонено на карточке — ничего не отправлено',
     denyDismissed: 'atlas-slack: диалог одобрения закрыт (Esc) — ничего не отправлено; спроси человека, что делать дальше',
-    denyEdit: 'atlas-slack: правка от владельца — «{t}». Ничего не отправлено: перепиши сообщение с учётом правки и вызови отправку снова (новая карточка).',
+    denyEdit: 'atlas-slack: правка с карточки — «{t}». Ничего не отправлено: перепиши сообщение с учётом правки и вызови отправку снова (новая карточка).',
   },
   en: {
     yes: 'Send', no: 'No', ask: 'Send?',
@@ -109,9 +109,16 @@ type SlackInput = {
 }
 
 /** The gate's prompt without the engine's own prefix, split into its lines. */
+const LANG_RE = /^lang: (ru|en)$/
+/** The profile language the gate attached to a transitional reason (a trailing `lang:` line; absent = en). */
+export function reasonLang(reason: string | undefined): Lang | undefined {
+  const m = (reason ?? '').split('\n').map(l => LANG_RE.exec(l.trimEnd())).find(Boolean)
+  return m ? (m[1] as Lang) : undefined
+}
+
 function gateLines(reason: string | undefined): string[] {
   const raw = (reason ?? '').replace(/^Hook '[^']*' (?:blocked this action|requires approval[^:]*): /, '')
-  return raw.split('\n').map(l => l.trimEnd()).filter(l => l.length > 0)
+  return raw.split('\n').map(l => l.trimEnd()).filter(l => l.length > 0 && !LANG_RE.test(l))
 }
 
 // "<sender> → <target>: “…” | сообщение ниже (N симв.) | message below (N chars) | blocks | 📎 <file> [+ “…” | + комментарий ниже (…)]. <voice sentence> Отправить?|Send?"
@@ -125,8 +132,10 @@ const LEDGER_RE = /^ledger: (✅|☑|⚠) (.*)$/
 const INTENTION_RE = /^intention: (.+)$/
 const WAS_RE = /^(?:было|was): (.*)$/
 
-// Content checks a send to others is expected to declare; absent ones are listed as not done.
-const EXPECTED_CHECKS = ['cicero', 'recipient', 'disclosure']
+// Content checks a send to others is expected to declare; absent ones are listed as not done. A ledger
+// audit (`cicero`) is expected only where the profile has a ledger (the gate then prints a ledger line);
+// a host without that workflow is never told it skipped it.
+const EXPECTED_CHECKS = ['recipient', 'disclosure']
 const CHECK_KEY: Record<string, string> = {
   cicero: 'lblCicero', recipient: 'lblRecipient', voice: 'lblVoice', disclosure: 'lblDisclosure',
   mark: 'lblMark', policy_row: 'lblPolicyRow', sources: 'lblSources',
@@ -141,7 +150,7 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
   const lines = gateLines(reason)
   const first = lines[0] ?? ''
   const m = SENTENCE.exec(first)
-  const lang: Lang = m?.[4] === 'Send?' || (!m && /\bSend\?/.test(first)) ? 'en' : 'ru'
+  const lang: Lang = m?.[4] === 'Отправить?' || (!m && /Отправить\?/.test(first)) ? 'ru' : 'en'
   const t = L[lang]
   const asBot = Boolean(input.as_bot)
   const sender = m?.[1] ?? (asBot ? t.defaultBot : t.defaultSender)
@@ -216,7 +225,7 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
   const label = (k: string) => (CHECK_KEY[k] ? t[CHECK_KEY[k]!]! : k)
   const declared = Object.entries(checks).filter(([, v]) => v !== undefined && v !== null && v !== '')
   const done = declared.map(([k, v]) => `${label(k)} — ${String(v)}`)
-  const expected = cicero ? EXPECTED_CHECKS.filter(k => k !== 'cicero') : EXPECTED_CHECKS
+  const expected = EXPECTED_CHECKS
   const missing = expected.filter(k => !declared.some(([d]) => d === k)).map(label)
 
   const edit = method === 'chat.update'
@@ -305,7 +314,7 @@ function whenText(postAt: unknown, lang: Lang): string | null {
 /** A compact card for a write outside the door core (today's gate semantics): what · where · when · text. */
 export function buildTransitionalCard(method: string, params: AnyParams, asBot: boolean, reason: string | undefined, langHint?: Lang): string {
   const lines = gateLines(reason)
-  const lang: Lang = langHint ?? 'ru'
+  const lang: Lang = langHint ?? 'en'
   const t = L[lang]
   const key = METHOD_KEY[method]
   const what = key
@@ -339,11 +348,11 @@ export function buildTransitionalCard(method: string, params: AnyParams, asBot: 
 
 /** The language of a built card (its last line is the question). */
 export function cardLang(card: string): Lang {
-  return card.endsWith(L.en.ask!) || card.endsWith(L.en.doAsk!) ? 'en' : 'ru'
+  return card.endsWith(L.ru.ask!) || card.endsWith(L.ru.doAsk!) ? 'ru' : 'en'
 }
 
 export const register: Register = on => {
-  let lastLang: Lang = 'ru'
+  let lastLang: Lang = 'en'
   on('tool.check', { tool: SLACK_API }, async ($, e, next) => {
     const verdict = await next(e)
     if (verdict.decision !== 'ask') return verdict
@@ -351,11 +360,11 @@ export const register: Register = on => {
     const method = input.method ?? ''
     if (!method || method.startsWith('_')) return verdict
     const core = CORE_METHODS.has(method)
-    // A transitional write has no names resolved and no language in its gate text: take the
-    // profile's language from the core prompt we saw last, else ru (the only profile today).
+    // A transitional write has no names resolved; its language comes from the gate's trailing `lang:` line
+    // (a non-default profile language), else from the core prompt we saw last, else en (the profile default).
     const card = core
       ? buildCard(input, verdict.reason)
-      : buildTransitionalCard(method, (input.params ?? {}) as AnyParams, Boolean(input.as_bot), verdict.reason, lastLang)
+      : buildTransitionalCard(method, (input.params ?? {}) as AnyParams, Boolean(input.as_bot), verdict.reason, reasonLang(verdict.reason) ?? lastLang)
     const t = L[cardLang(card)]
     if (core) lastLang = cardLang(card)
     try {

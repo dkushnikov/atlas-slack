@@ -80,7 +80,7 @@ class Profile:
     decision_fallback: bool = False  # pre-registered decision row instead of an updatedInput token
     decision_permission_modes: list = field(default_factory=lambda: list(DEFAULT_DECISION_MODES))
     language: str = "en"             # approval prompt language
-    names: dict = field(default_factory=dict)   # id → display label override (e.g. "владелец", "DM владелец↔Atlas")
+    names: dict = field(default_factory=dict)   # id → display label override (e.g. "Ann", "DM Ann↔Atlas")
     resolve_names: bool = True       # resolve ids via conversations.info / users.info (reads) for the prompt
     errors: list = field(default_factory=list)   # non-empty → broken: writes refuse
     path: str | None = None

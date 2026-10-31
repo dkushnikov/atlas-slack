@@ -10,10 +10,10 @@ from the artefact the ritual left — and an edit after the audit shows ⚠ unti
 ritual re-audits and appends the new draft.
 
 Informational only: no ledger, no directory, an unreadable file — a ⚠ line on the
-card, never a refusal (the owner, 2026-10-31: «если не создаёт зависимость»).
+card, never a refusal (owner's decision, 2026-10-31: the ledger must not become a dependency).
 
-Several ledger folders may be named, `os.pathsep`-separated (the MC door also reads
-the Personal vault's ledger: a comm drafted there is sent through an MC session).
+Several ledger folders may be named, `os.pathsep`-separated (one context's door may read
+another context's ledger: a comm drafted there is sent through this one).
 """
 
 from __future__ import annotations

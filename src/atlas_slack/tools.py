@@ -6,7 +6,7 @@ goes through the `slack_api` gateway (v1.2 removed the 13 convenience wrappers
 — 0 calls in 86 days of usage; each was a thin alias for one or two slack_api
 calls, at a per-session context tax for 15 tool schemas).
 
-Token routing: user token by default (the owner's file visibility is the superset);
+Token routing: user token by default (the person's file visibility is the superset);
 as_bot=True for bot-visible-only files.
 """
 
@@ -49,7 +49,7 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False, vtt: b
                  or a message's files attachment.
         out_dir: Directory to save into. Default: ~/Downloads/slack (created if missing).
         as_bot: If True, download with the bot token (file must be visible to Atlas).
-                If False (default), use the owner's user token (broadest file visibility).
+                If False (default), use the person's user token (broadest file visibility).
         vtt: If True, download Slack's own transcript of a video/clip (WebVTT) instead
              of the media — files.info shows `transcription: complete` and `vtt: available`
              when one exists. Saved as "{file_id}--{name}.vtt".

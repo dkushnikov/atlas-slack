@@ -5,7 +5,7 @@
     "atlas-slack": {
       "source": {
         "source": "directory",
-        "path": "<repo>"
+        "path": "/path/to/atlas-slack"
       }
     }
   },

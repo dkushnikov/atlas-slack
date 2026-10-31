@@ -93,7 +93,7 @@ def test_slack_api_as_bot_uses_bot_client(mock_webclient):
 
 
 def test_slack_api_post_message_user_mode_injects_attribution(mock_webclient):
-    """User-token chat.postMessage must append :blue_heart: <@U0BOTUSR01> context block."""
+    """User-token chat.postMessage must append :blue_heart: <@bot_user_id> context block."""
     mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
     slack_api("chat.postMessage", {"channel": "C1", "text": "hello"})
 
@@ -148,11 +148,11 @@ def test_slack_api_non_whitelisted_method_no_attribution(mock_webclient):
 def test_slack_api_read_method_no_attribution(mock_webclient):
     """Read methods never get attribution even when params carry text-like fields."""
     mock_webclient.api_call.return_value = {"ok": True, "messages": []}
-    slack_api("search.messages", {"query": "from:@owner thread:1.2"})
+    slack_api("search.messages", {"query": "from:@ann thread:1.2"})
 
     call_params = mock_webclient.api_call.call_args.kwargs["params"]
     assert "blocks" not in call_params
-    assert call_params["query"] == "from:@owner thread:1.2"
+    assert call_params["query"] == "from:@ann thread:1.2"
 
 
 def test_slack_api_chat_schedule_message_needs_a_decision_since_0_5_3(mock_webclient):

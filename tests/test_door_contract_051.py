@@ -29,7 +29,7 @@ def test_window_is_thirty_minutes_and_inside_the_prune_horizon():
 
 
 def test_approval_after_fifteen_minutes_now_sends(env):
-    """The 2026-10-30 21:09 case: the owner answered 14m43s after the prompt — expired under 600 s."""
+    """The 2026-10-30 21:09 case: the person answered 14m43s after the prompt — expired under 600 s."""
     ti = env.approve(post())
     env.journal._conn.execute("UPDATE decisions SET issued_at=issued_at-883")
     res = env.send(ti)
