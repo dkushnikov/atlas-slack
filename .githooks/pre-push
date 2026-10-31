@@ -1,0 +1,18 @@
+#!/bin/sh
+# Refuse a push that would publish private tokens (paths, names, session trailers, workspace ids)
+# in tracked files or in the outgoing commit messages. Enable once per clone:
+#   git config core.hooksPath .githooks
+set -e
+repo=$(git rev-parse --show-toplevel)
+while read -r local_ref local_sha remote_sha _; do
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    range="$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  python3 "$repo/tests/test_no_private_tokens.py" --commits "$range" || {
+    echo "pre-push: private tokens found — scrub before pushing (see tests/test_no_private_tokens.py)" >&2
+    exit 1
+  }
+done
+exit 0

@@ -1,0 +1,32 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the private-token scan reads commit messages too
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python3 -m pip install --quiet -e ".[dev]"
+
+      - name: Unit tests (level 1 — no Slack, no secrets; e2e skipped without SLACK_E2E=1)
+        run: python3 -m pytest -q -rs tests/
+
+      - name: Private tokens in the pushed commit messages
+        if: github.event_name == 'push'
+        run: python3 tests/test_no_private_tokens.py --commits "${{ github.event.before }}..${{ github.sha }}"
+
+      - name: Plugin manifest
+        run: |
+          python3 -c "import json; json.load(open('plugins/atlas-slack/.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); json.load(open('slack-app-manifest.json'))"
