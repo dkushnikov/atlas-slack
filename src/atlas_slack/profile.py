@@ -197,7 +197,7 @@ def load_profile(name: str | None = None) -> Profile:
     if not path.exists():
         prof = _builtin(pname)
         if explicit and pname != DEFAULT_PROFILE:
-            prof.errors.append(f"profile_missing: {path} does not exist (ATLAS_SLACK_PROFILE={pname})")
+            prof.errors.append(f"profile_missing: {path} does not exist (profile {pname!r} selected by ATLAS_SLACK_PROFILE or --profile)")
         return prof
     prof = Profile(name=pname, source="file", journal_dir=str(data_dir() / pname), path=str(path))
     try:
