@@ -63,6 +63,10 @@ If it cannot be settled by reading, the agent asks you to look and records your 
 
 **Does it need a Slack app?** Yes — yours, created from the manifest in this repo in about five minutes. Every Slack integration runs under some app's tokens; the official MCP hides that behind Slack's own app, this one gives you your own. That is what makes the two voices possible (a user token and a bot token of one app), keeps the tokens on your machine, and keeps the app *internal* in Slack's terms — outside the rate limits Slack applies to distributed apps.
 
+**Can I create one? Why not use the official Slack MCP as the transport?** In a normal workspace, yes: Slack lets members create apps for their own workspace by default; where an admin has turned on *app approval*, the install needs their one-time approval, creation itself usually does not. One app per person is the simple path. One shared app per team would give everyone the same bot token, but each person's *user* token then needs an OAuth sign-in flow that this plugin does not ship yet — a team install is on the list, not in 0.7.0.
+
+The official Slack MCP cannot be the transport because it runs under one identity, the OAuth user's. One identity means no bot voice, no `💙` mark as a choice, no `op_id` in message metadata for reconciliation, and nothing a script can import. Your own app is what the two voices cost. A lighter mode — your voice only, the card and the journal as hooks over the official MCP — is conceivable and not built.
+
 ## What this is NOT
 
 - **Not a replacement for the official Slack MCP.** That one is about access — OAuth, search, canvas, reading and posting. This one is about *managed communication*. They coexist; when both could perform a write, the agent is told to use `slack_api`, because the guarantees above apply only to it.
