@@ -4,6 +4,7 @@
                                            stdout: the verdict JSON (+ `decision_check` when a token is attached)
     python3 -m atlas_slack.gate --hook     stdout: Claude Code PreToolUse hookSpecificOutput
     python3 -m atlas_slack.gate --rights   stdout: the rights table (same as slack_api("_rights"))
+    python3 -m atlas_slack.gate --reconcile  resolve `unknown` outcomes against Slack (same as slack_api("_reconcile"))
 
 The Claude Code hook (`plugins/atlas-slack/hooks/mcp-slack-gate.py`) is a thin
 wrapper around `run_cc_hook()`. Mapping: allow → allow; refuse → deny (reason
@@ -59,12 +60,19 @@ _T = {
     "en": {"bot_voice": "Bot voice, on your request.", "person_voice": "In your voice, marked 💙 {bot}.",
            "send": "Send?", "resend": "Resend.", "thread": " (in thread)", "broadcast": " + also to the channel",
            "below": "message below", "chars": "chars", "you": "You", "bot": "the bot", "scheduled": " · scheduled for {when}",
+           "edit": " · edit of the message from {when}", "ephemeral": " · visible only to {user}", "me": " · /me",
+           "was": "was: ", "was_unread": "was: ⚠ not read ({why})", "comment_below": "comment below",
            "no_policy": "⚠ no context policy — the built-in strict policy applies"},
     "ru": {"bot_voice": "Голос бота, по твоему запросу.", "person_voice": "Твоим голосом, с пометкой 💙 {bot}.",
            "send": "Отправить?", "resend": "Повторная отправка.", "thread": " (в тред)",
            "broadcast": " + в канал", "below": "сообщение ниже", "chars": "симв.", "you": "Ты", "bot": "бот", "scheduled": " · отложено на {when}",
+           "edit": " · правка сообщения от {when}", "ephemeral": " · видно только {user}", "me": " · /me",
+           "was": "было: ", "was_unread": "было: ⚠ не прочитано ({why})", "comment_below": "комментарий ниже",
            "no_policy": "⚠ политики контекста нет — действует встроенная строгая"},
 }
+# Params the prompt already shows in words — not repeated in the technical line.
+_SHOWN_PARAMS = ("channel", "text", "blocks", "thread_ts", "_raw", "ts", "user", "post_at", "file", "content",
+                 "initial_comment", "title", "filename", "attribution", "file_uploads")
 
 
 def _when(post_at) -> str:
@@ -76,11 +84,14 @@ def _when(post_at) -> str:
         return str(post_at)
 
 
-def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=None, op_short: str = "") -> str:
+def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=None, op_short: str = "",
+                  prior: dict | None = None) -> str:
     """The approval prompt: one human sentence, the text, one technical line (A4 "the adapter shows these fields").
 
     Recipient by name (names.py), language from the profile. Machine detail — row, mode,
-    profile, origin, empty checks — lives in the journal, not in the prompt.
+    profile, origin, empty checks — lives in the journal, not in the prompt. `chat.update`
+    adds a `was:` line (the message before the edit, one line, ≤ 400 chars); `files.uploadV2`
+    says `📎 <name> (<size>)` and treats `initial_comment` as the text.
     """
     from atlas_slack.names import Names
     profile = profile or load_profile()
@@ -96,9 +107,23 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
         target += t["broadcast"]
     if params.get("post_at") is not None:
         target += t["scheduled"].format(when=_when(params.get("post_at")))
-    text = params.get("text") if isinstance(params.get("text"), str) else ""
+    if v.method == "chat.update":
+        target += t["edit"].format(when=_when(params.get("ts")))
+    elif v.method == "chat.postEphemeral":
+        target += t["ephemeral"].format(user=names.user(params.get("user"), prefer_bot=as_bot) or params.get("user"))
+    elif v.method == "chat.meMessage":
+        target += t["me"]
+    upload = v.method == "files.uploadV2"
+    text_key = "initial_comment" if upload else "text"
+    text = params.get(text_key) if isinstance(params.get(text_key), str) else ""
     inline = text and len(text) <= TEXT_INLINE and "\n" not in text
-    what = f"“{text}”" if inline else f"{t['below']} ({len(text)} {t['chars']})" if text else "blocks"
+    if upload:
+        from atlas_slack import shaping as _shaping
+        what = f"📎 {_shaping.upload_label(params)}"
+        if text:
+            what += f" + “{text}”" if inline else f" + {t['comment_below']} ({len(text)} {t['chars']})"
+    else:
+        what = f"“{text}”" if inline else f"{t['below']} ({len(text)} {t['chars']})" if text else "blocks"
     voice = t["bot_voice"] if as_bot else t["person_voice"].format(bot=bot)
     parts = [f"{sender} → {target}: {what}.", voice]
     if p.get("resend"):
@@ -107,6 +132,12 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
     lines = [" ".join(parts)]
     if text and not inline:
         lines.append(text if len(text) <= TEXT_BLOCK else text[:TEXT_BLOCK] + f"… ({len(text)} {t['chars']})")
+    if v.method == "chat.update":
+        from atlas_slack.prior import one_line
+        if prior and not prior.get("error"):
+            lines.append(t["was"] + one_line(prior.get("text") or "", TEXT_BLOCK))
+        else:
+            lines.append(t["was_unread"].format(why=(prior or {}).get("error") or "no read"))
     checks = p.get("checks") or {}
     if checks:
         lines.append("checks: " + ", ".join(f"{k}={checks[k]}" for k in sorted(checks)))
@@ -115,7 +146,9 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
     # The ledger behind the comm_id: the audit pass as a fact the door read, not a claim (0.5.2).
     from atlas_slack import ledger
     try:
-        lines.extend(ledger.prompt_lines(profile, p.get("comm_id"), text if isinstance(text, str) else None))
+        # with caller blocks the recipient reads the blocks, not `text`: the ledger match is not a ✅
+        compared = "" if isinstance(params.get("blocks"), list) and params["blocks"] else (text if isinstance(text, str) else None)
+        lines.extend(ledger.prompt_lines(profile, p.get("comm_id"), compared))
     except Exception:            # the ledger line is a courtesy; the prompt must always be issued
         lines.append("ledger: ⚠ не прочитан")
     names.save()
@@ -126,7 +159,9 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
         tech.append(f"op {op_short}")
     if isinstance(params.get("blocks"), list):
         tech.append(f"blocks {len(params['blocks'])}")
-    extra = sorted(k for k in params if k not in ("channel", "text", "blocks", "thread_ts", "_raw"))
+    if p.get("file_sha256"):
+        tech.append("sha256 " + ",".join(h[:8] for h in p["file_sha256"]))
+    extra = sorted(k for k in params if k not in _SHOWN_PARAMS)
     if extra:
         tech.append("params " + ",".join(extra))
     lines.append(" · ".join(tech))
@@ -153,8 +188,18 @@ def _emit(decision: str, reason: str = "", updated_input: dict | None = None) ->
     return out
 
 
-def hook_output(data: dict, profile=None) -> dict:
-    """Claude Code PreToolUse decision for one hook payload."""
+def _prior_reader(profile):
+    """The hook's read of a message before an edit — through Names' live-read switch and 3 s timeout
+    (`resolve_names: false` / ATLAS_SLACK_RESOLVE_NAMES=0 → no read; the server still reads before the send)."""
+    from atlas_slack.names import Names
+    names = Names(profile)
+    if not names.live:
+        return None
+    return lambda m, pr, b: names._read(m, pr, b) or {"ok": False, "error": "read failed"}
+
+
+def hook_output(data: dict, profile=None, prior_reader=None) -> dict:
+    """Claude Code PreToolUse decision for one hook payload. `prior_reader` overrides the live read (tests)."""
     tool_name = data.get("tool_name", "") or ""
     tool_input = data.get("tool_input") or {}
     if not isinstance(tool_input, dict):
@@ -172,6 +217,37 @@ def hook_output(data: dict, profile=None) -> dict:
     method, params, as_bot, prov_in = _parts(tool_input)
 
     if v.decision == ALLOW:
+        if method == "_reconcile" and isinstance(params.get("resolve"), str):
+            # the person's word on an unknown row — a decision, not a read: ask, naming what will be recorded.
+            # Same guard as a core send: only where Claude Code's `ask` reaches a human (no token binds it —
+            # the write is to the journal only, and the comm it unblocks still needs its own approval to send).
+            mode = data.get("permission_mode")
+            if mode is not None and mode not in profile.decision_permission_modes:
+                _journal_refusal(profile, journal, method, as_bot, "permission_mode_unsafe")
+                return _emit("deny", f"atlas-slack refused — permission_mode_unsafe: permission mode {mode!r} cannot "
+                                     "guarantee that a human sees this question; switch to default (or auto) mode")
+            ids = params.get("op_ids") if isinstance(params.get("op_ids"), list) else []
+            if not ids or not all(isinstance(i, str) for i in ids) or params["resolve"] not in ("ok", "absent") or journal is None:
+                return _emit("deny", "atlas-slack refused — invalid_arguments: _reconcile by hand needs op_ids (a non-empty "
+                                     "list of op id strings) and resolve: \"ok\" | \"absent\"" + ("" if journal else " (journal unavailable)"))
+            # a one-time decision bound to {these ops, this resolution, this profile}, like a send: the server
+            # consumes it, so a call that never met the hook is refused `no_decision` (verifier, 2026-10-31)
+            from atlas_slack import __version__ as _ver
+            from atlas_slack import reconcile as _rec
+            rhash = _rec.manual_hash(ids, params["resolve"], profile.name)
+            try:
+                secret = decision_mod.load_secret(profile.journal_dir)
+                token = decision_mod.issue_token(secret, rhash)
+                journal.store_decision(token, rhash, decision_mod.ADAPTER_CC_HOOK + f" v={_ver} manual-resolve"
+                                       + (f" session={str(data.get('session_id') or '')[:36]}" if data.get("session_id") else ""))
+            except (OSError, JournalUnavailable) as e:
+                return _emit("deny", f"atlas-slack refused — journal_unavailable: cannot record the decision ({e})")
+            rows = "\n".join(_rec.describe_rows(journal, ids))
+            verdict_txt = "OK — it is in Slack" if params["resolve"] == "ok" else "ABSENT — it is not in Slack"
+            updated = {**tool_input, "params": {**params, "decision": {"t": token, "p": profile.name, "v": _ver}}}
+            reason = (f"atlas-slack: mark as {verdict_txt} by your word (you looked). Nothing is sent; the journal "
+                      f"records your resolution and unblocks the comm.\n{rows}")
+            return _emit("ask", reason) if profile.decision_fallback else _emit("ask", reason, updated)
         return _emit("allow", f"atlas-slack: {v.message}")
     if v.decision == REFUSE:
         # A refusal here never reaches the server, so the hook is the only place that can
@@ -190,18 +266,33 @@ def hook_output(data: dict, profile=None) -> dict:
         return _emit("deny", f"atlas-slack refused — permission_mode_unsafe: permission mode {mode!r} cannot "
                              "guarantee that a human sees this prompt; switch to default (or auto) mode, or list "
                              "the mode in the profile's decision_permission_modes")
+    prior = None
+    if method == "chat.update":
+        # The message before the edit — for the prompt («было → станет») and the author check, before any
+        # token is issued (a denied edit leaves no decision row). Unreadable → the prompt says so; the
+        # server reads again before the send and Slack enforces the author in the last resort.
+        from atlas_slack import prior as prior_mod
+        reader = prior_reader or _prior_reader(profile)
+        prior = (prior_mod.fetch_prior(reader, params.get("channel"), params.get("ts"), as_bot) if reader
+                 else {"error": "live reads off"})
+        why = prior_mod.author_problem(prior, as_bot, profile)
+        if why:
+            _journal_refusal(profile, journal, method, as_bot, "author_mismatch")
+            return _emit("deny", f"atlas-slack refused — author_mismatch: {why}")
     sid = str(data.get("session_id") or "")[:36]
     try:
         secret = decision_mod.load_secret(profile.journal_dir)
         token = decision_mod.issue_token(secret, v.op_hash)
+        from atlas_slack import __version__ as _ver
+        # the row carries the hook's version too: the fallback path has no wire token to carry it
         journal.store_decision(token, v.op_hash,
-                               decision_mod.ADAPTER_CC_HOOK + (f" session={sid}" if sid else ""))
+                               decision_mod.ADAPTER_CC_HOOK + f" v={_ver}" + (f" session={sid}" if sid else ""))
     except (OSError, JournalUnavailable, AttributeError) as e:
         _journal_refusal(profile, journal, method, as_bot, "journal_unavailable")
         return _emit("deny", f"atlas-slack refused — journal_unavailable: cannot record the decision ({e})")
     caller_prov = prov_in if isinstance(prov_in, dict) else {}
     op_short = (caller_prov.get("op_id") or decision_mod.derive_op_id(v.op_hash, token))[:8]
-    reason = describe_send(v, params, as_bot, profile, op_short=op_short)
+    reason = describe_send(v, params, as_bot, profile, op_short=op_short, prior=prior)
     if profile.decision_fallback:
         return _emit("ask", reason)
     # Compact wire form: only what the caller supplied + the decision. Defaults (origin,
@@ -231,6 +322,12 @@ def main(argv: list[str] | None = None) -> int:
     if "--rights" in argv:
         print(rights())
         return 0
+    if "--reconcile" in argv:
+        # Resolve `unknown` outcomes against Slack (reads only; writes the journal). Same as slack_api("_reconcile").
+        from atlas_slack.door import Door
+        res = Door().call("_reconcile")
+        print(res.data["report"] if res.ok else f"Error: {res.verdict.reason} — {res.verdict.message}")
+        return 0 if res.ok else 2
     if "--hook" in argv:
         run_cc_hook()
         return 0

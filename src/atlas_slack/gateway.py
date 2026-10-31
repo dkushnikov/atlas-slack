@@ -27,17 +27,21 @@ mcp = FastMCP(
         "getUploadURLExternal → PUT → completeUploadExternal flow itself; never PUT bytes by hand. "
         "Pass as_bot=True for posts/reactions/writes to appear as the bot; "
         "as_bot=False (default) posts as the person with :blue_heart: @bot attribution. "
-        "chat.postMessage runs through the v2 core: the approval prompt shows its provenance, "
+        "chat.postMessage, chat.scheduleMessage, chat.update, chat.postEphemeral, chat.meMessage and "
+        "files.uploadV2 run through the v2 core: the approval prompt shows the provenance, "
         "the human's decision is bound to that exact operation (change anything after approval → "
-        "decision_mismatch; repeat → decision_already_used) and the send is journalled before it "
-        "leaves. Optional `provenance` = {cls: 'A' (person voice) | 'B-h' (bot voice), comm_id, "
+        "decision_mismatch; repeat → decision_already_used) and the write is journalled before it "
+        "leaves. chat.update reads the message first (its prior text is journalled; the original's author "
+        "must match the voice). Optional `provenance` = {cls: 'A' (person voice) | 'B-h' (bot voice), comm_id, "
         "target, checks, sources, ttl_s, resend}. username/icon_emoji/icon_url are refused. "
-        "slack_api('_rights') shows what this host may do now (profile × policy × class). "
+        "slack_api('_rights') shows what this host may do now (profile × policy × class); "
+        "slack_api('_reconcile') resolves journal rows with an unknown outcome against Slack (reads only) — "
+        "required before any resend of such a comm_id. "
         "Attribution is auto-applied to user-token sends on chat.postMessage, chat.update, "
         "chat.scheduleMessage, chat.postEphemeral (Block Kit context block) and "
         "files.uploadV2 / files.completeUploadExternal initial_comment (text suffix; "
         "uploadV2 with attribution='block' posts the comment as a separate attributed "
-        "message instead); long text is "
+        "message — a child op under the same approval); long text is "
         "auto-split into ≤3000-char sections (user token: always; bot token: "
         "chat.postMessage/update/scheduleMessage when text > 3000 chars and no blocks). "
         "Pass _raw=true inside params to get the response as JSON instead of the shape (delivery checks "
@@ -62,8 +66,9 @@ BOT_SPLIT_METHODS = shaping.BOT_SPLIT_METHODS
 # Web API endpoint: dispatched through api_call it returned `unknown_method`
 # (UPL-002, 2026-09-03). The SDK runs getUploadURLExternal → binary POST →
 # completeUploadExternal internally — the one flow the JSON gateway cannot
-# express on its own (no tool for the binary step).
-UPLOAD_METHOD = "files.uploadV2"
+# express on its own (no tool for the binary step). Since slice 2 the upload is a
+# core send: pre-flight and shaping live in shaping.py, the dispatch in _core_send.
+UPLOAD_METHOD = shaping.UPLOAD_METHOD
 
 # Streaming trio (agent surface, Apr 2026 platform additions). Policy: bot-only.
 # A user-token stream would ship recipient-facing text with no reliable place to
@@ -142,78 +147,6 @@ def _response_data(resp) -> dict:
     return resp.data if hasattr(resp, "data") else {"ok": True}
 
 
-def _checked_upload_path(value: str, label: str) -> str:
-    """Resolve a local upload path: `~` expanded, then absolute and a regular file.
-
-    The MCP server's cwd is not the session's, so a relative path would resolve
-    somewhere the caller never looked.
-    """
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        raise _slack_error("invalid_arguments", f"`{label}` must be an absolute path, got {value!r}")
-    if not path.is_file():
-        raise _slack_error("file_not_found", f"`{label}` does not exist or is not a regular file: {path}")
-    return str(path)
-
-
-def _upload_v2(client, params: dict, as_bot: bool, bot_user_id: str | None = None) -> tuple[dict, list[str]]:
-    """files.uploadV2 → WebClient.files_upload_v2 (UPL-002).
-
-    Returns (response data, extra render lines). Pre-flight:
-    - `channels` must be a list; one destination is `channel` as a string —
-      a plain string in `channels` is joined character by character by the SDK
-      (UPL-001: `"D06MG7QF3ME"` → `channel=D`).
-    - `file` (and every `file_uploads[i].file`) is an absolute local path that
-      exists — `~` expanded (the MCP server's cwd is not the session's);
-      `content` is passed through.
-    Attribution (as_bot=False): text suffix on `initial_comment` by default —
-    Slack's file-share message cannot carry blocks. `attribution: "block"`
-    (v1.3: comment as a separate attributed chat.postMessage) refuses
-    `composite_not_in_slice` since the v2 core slice — that second post would
-    bypass the core; it returns as a composite op (child op_id). Bot uploads
-    never get attribution.
-    """
-    params = dict(params)
-    attribution = params.pop("attribution", None)
-    channels = params.get("channels")
-    if isinstance(channels, str):
-        raise _slack_error(
-            "invalid_arguments",
-            "`channels` must be a list — for one destination pass `channel` as a "
-            "string (a plain string in `channels` is split character by character).",
-        )
-    if not any(k in params for k in ("file", "content", "file_uploads")):
-        raise _slack_error("missing_params", "files.uploadV2 needs `file` (absolute path), `content`, or `file_uploads`")
-    if isinstance(params.get("file"), str):
-        params["file"] = _checked_upload_path(params["file"], "file")
-    if isinstance(params.get("file_uploads"), list):
-        items = []
-        for i, item in enumerate(params["file_uploads"]):
-            if isinstance(item, dict) and isinstance(item.get("file"), str):
-                item = {**item, "file": _checked_upload_path(item["file"], f"file_uploads[{i}].file")}
-            items.append(item)
-        params["file_uploads"] = items
-    comment = params.get("initial_comment")
-    block_mode = (not as_bot) and attribution == "block" and bool(comment)
-    if block_mode:
-        # The block-mode comment is a second chat.postMessage. Since the v2 core slice
-        # every chat.postMessage needs its own one-time decision and journal intent; a
-        # composite upload+comment op (child op_id, A4) is not built yet → refuse
-        # instead of posting outside the core (verifier finding 2026-10-28).
-        raise _slack_error(
-            "composite_not_in_slice",
-            "attribution='block' posts the comment as a separate chat.postMessage outside the v2 core — "
-            "not supported yet. Upload without `attribution` (the comment gets the 💙 text suffix), or upload "
-            "without `initial_comment` and post the comment with chat.postMessage (its own approval).",
-        )
-    elif not as_bot and comment:
-        params = _shaping_call(shaping.inject_attribution_suffix, params, "initial_comment", bot_user_id)
-
-    data = _response_data(client.files_upload_v2(**params))
-    extra: list[str] = []
-    return data, extra
-
-
 @mcp.tool()
 def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
               provenance: dict | None = None) -> str:
@@ -237,12 +170,14 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         params: `file` (absolute local path) or `content` (text); `filename`, `title`,
         `channel` (a string — not `channels`), `initial_comment`, `thread_ts`, `alt_txt`.
         `attribution: "block"` (user token only) posts the comment as a separate
-        attributed message with `<permalink|title>` instead of the text suffix.
+        attributed message with `<permalink|title>` instead of the text suffix — a child
+        op under the same approval; the file's sha256 is bound into the approval.
 
-    Provenance (v2 core, chat.postMessage) — optional `provenance` object: `cls`
+    Provenance (v2 core: chat.postMessage, chat.scheduleMessage, chat.update,
+    chat.postEphemeral, chat.meMessage, files.uploadV2) — optional `provenance` object: `cls`
     (A = your voice, B-h = bot voice, both human-approved), `comm_id`, `op_id`,
-    `target`, `checks`, `sources`, `origin`, `ttl_s`, `resend`. Without it a
-    chat.postMessage still asks the human (migration rule) — with a warning. The
+    `target`, `checks`, `sources`, `origin`, `ttl_s`, `resend`. Without it a core
+    send still asks the human (migration rule) — with a warning. The
     approval prompt shows the provenance; the decision is bound to the exact
     operation (any change after approval → `decision_mismatch`). Every send is
     journalled before it leaves (write-ahead). `slack_api("_rights")` shows what
@@ -250,6 +185,8 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     mints a journal-unique ledger comm_id (no Slack call) — pass it as provenance.comm_id;
     without one the door mints it and returns it in the result line. An approval is valid
     30 min; `decision_expired` = nothing sent, call again with the same input.
+    `slack_api("_reconcile")` resolves journal rows with an unknown outcome by reading
+    Slack (never resends); a comm_id with an unknown op refuses `reconcile_required` until then.
 
     Raw response — put `"_raw": true` inside params to get the response as JSON
     (cleaned of ok/response_metadata, cursor as `_next_cursor`)
@@ -269,6 +206,8 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         # A journal-unique comm_id for the ledger, noted as the comm's first sighting (invariant x:
         # ttl_s counts from here). No Slack call. The same id then goes into provenance.comm_id.
         return _mint_comm_id_locally()
+    if method == "_reconcile":
+        return _reconcile_locally(params)
     if method in STREAM_METHODS and not as_bot:
         raise _slack_error(
             "user_token_stream",
@@ -284,9 +223,38 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         comm = (f" · comm {res.comm_id}" + (" (minted by the door — record it in the ledger)"
                                              if res.comm_minted else "")) if res.comm_id else ""
         tail = (f"\njournal: op {res.op_id} ok{comm}" if not res.journal_error else
-                f"\n⚠ outcome_not_journaled: sent (ts={res.data.get('ts', '?')}) but the outcome could not be "
+                f"\n⚠ outcome_not_journaled: sent ({core.outcome_id(res.data) or '?'}) but the outcome could not be "
                 f"journaled ({res.journal_error}) — the message IS in Slack; do not resend. op {res.op_id} stays "
                 f"pending → unknown in the journal.{comm}")
+        if res.child_op_id:
+            # composite upload: the comment post is a second op; a failure there never means "re-upload",
+            # and an ambiguous failure never means "post again" (invariant viii: reconcile, not retry)
+            if res.child_outcome == "ok":
+                tail += f"\ncomment: op {res.child_op_id} ok ts={res.child_data.get('ts', '?')}"
+            elif res.child_outcome == "unknown":
+                tail += (f"\n⚠ comment_outcome_unknown: the file IS in Slack (op {res.op_id} ok); the comment post "
+                         f"(op {res.child_op_id}) may or may not exist — {res.child_error}. Do not upload again and do "
+                         "not post the comment again: run slack_api(\"_reconcile\") first.")
+            elif res.child_outcome == "journal":
+                tail += (f"\n⚠ comment_not_journaled: the file IS in Slack (op {res.op_id} ok) and the comment was posted "
+                         f"(op {res.child_op_id}) but its outcome could not be journaled: {res.child_error}. Do not upload "
+                         "again, do not post the comment again.")
+            elif res.child_outcome == "skipped":
+                tail += (f"\n⚠ comment_not_posted: the file IS in Slack (op {res.op_id}); the comment was not attempted — "
+                         f"op {res.child_op_id}: {res.child_error}. Do not upload again; "
+                         + ("the upload's own outcome is not journaled yet (pending → unknown): run slack_api(\"_reconcile\") "
+                            "first, then post the comment with chat.postMessage (its own approval, the same comm_id with resend: true) "
+                            "if it is still wanted." if res.journal_error else
+                            "post the comment with chat.postMessage (its own approval; the same comm_id with resend: true) if it "
+                            "is still wanted."))
+            else:
+                tail += (f"\n⚠ comment_not_posted: the file IS in Slack (op {res.op_id} ok) but Slack refused the comment — "
+                         f"op {res.child_op_id} {res.child_error}. Do not upload again; post the comment with "
+                         "chat.postMessage (its own approval; the same comm_id with resend: true — the upload already "
+                         "counts as this comm's write) if it is still wanted.")
+        if res.prior is not None and not res.prior.get("error"):
+            from atlas_slack.prior import one_line
+            tail += f"\nwas: {one_line(res.prior.get('text') or '', 200)}"
         return format_response(method, res.data, req_params=params or {}, raw=raw) + tail
     # Reads and transitional writes: the verdict still applies (freeze, identity
     # overrides, refused methods, broken profile, invalid policy); execution is
@@ -299,15 +267,12 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     t0 = time.monotonic()
     try:
         client = get_client(as_bot=as_bot)
-        if method == UPLOAD_METHOD:
-            data, extra = _upload_v2(client, call_params, as_bot, profile.bot_user_id)
-        else:
-            if method in DEFAULT_LIMIT_METHODS and "limit" not in call_params:
-                call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
-            if method in BLOCKS_METHODS:
-                _validate_caller_blocks(call_params)
-            call_params = _shaping_call(shaping.shape_send, method, call_params, as_bot, profile.bot_user_id)
-            data = _response_data(client.api_call(method, params=_encode_nested(call_params)))
+        if method in DEFAULT_LIMIT_METHODS and "limit" not in call_params:
+            call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
+        if method in BLOCKS_METHODS:
+            _validate_caller_blocks(call_params)
+        call_params = _shaping_call(shaping.shape_send, method, call_params, as_bot, profile.bot_user_id)
+        data = _response_data(client.api_call(method, params=_encode_nested(call_params)))
     except SlackApiError as e:
         code = _error_code_from(e)
         _observe(profile, method, as_bot, "error", code or "exception", t0)
@@ -352,15 +317,81 @@ def _mint_comm_id_locally() -> str:
     return f"comm_id: {cid}\n(first sighting noted now; put it in the ledger file and in provenance.comm_id)"
 
 
-def _core_send(method: str, params: dict, as_bot: bool, provenance: dict | None, profile) -> "core.SendResult":
-    """chat.postMessage through the v2 core: policy → provenance → decision → journal → transport."""
+def _sdk_transport(client):
+    """The core's transport over a WebClient: api_call for Web API methods, files_upload_v2 for uploads.
+
+    `bot` is the voice the core already chose the client for; a composite's child post and a
+    chat.update's prior read run under the same client (same voice as the parent write)."""
+    def transport(m: str, final_params: dict, bot: bool) -> dict:
+        if m == UPLOAD_METHOD:
+            return _response_data(client.files_upload_v2(**final_params))
+        return _response_data(client.api_call(m, params=_encode_nested(final_params)))
+    return transport
+
+
+def _reconcile_locally(params: dict | None) -> str:
+    """slack_api("_reconcile") — resolve `unknown` outcomes against Slack; reads only, writes the journal."""
+    from atlas_slack import reconcile as _rec
+    from atlas_slack.journal import JournalUnavailable, open_journal
+    profile = load_profile()
+    v = evaluate("_reconcile", {}, False, None, profile, load_policy(profile), face="mcp")
+    if v.decision == REFUSE:
+        raise _slack_error(v.reason, v.message)
     try:
-        client = get_client(as_bot=as_bot)
+        j = open_journal(profile.journal_dir)
+    except JournalUnavailable as e:
+        raise _slack_error("journal_unavailable", f"cannot reconcile without the journal: {e}") from e
+
+    def reader(m: str, p: dict, as_bot: bool) -> dict:
+        return _response_data(get_client(as_bot=as_bot).api_call(m, params=_encode_nested(p)))
+
+    ids = (params or {}).get("op_ids")
+    if ids is not None and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
+        raise _slack_error("invalid_arguments", "`op_ids` must be a list of op id strings ([] reconciles nothing)")
+    resolve = (params or {}).get("resolve")
+    if resolve is not None:
+        # the person's word on rows a read cannot settle — bound to the hook's one-time decision like a send:
+        # a call that never met the hook (hooks off, another client) is refused, nothing is recorded
+        if resolve not in _rec.MANUAL_RESOLUTIONS or not ids:
+            raise _slack_error("invalid_arguments", "_reconcile by hand needs op_ids (non-empty) and resolve: \"ok\" | \"absent\"")
+        import re as _re
+        from atlas_slack import __version__, decision as decision_mod
+        rhash = _rec.manual_hash(ids, resolve, profile.name)
+        dec = (params or {}).get("decision")
+        if isinstance(dec, dict) and dec.get("p") and dec["p"] != profile.name:
+            raise _slack_error("profile_mismatch", f"the decision was issued under profile {dec['p']!r} but this server runs "
+                                                   f"{profile.name!r} — ATLAS_SLACK_PROFILE differs between the hook and the server")
+        dc = decision_mod.check(dec if isinstance(dec, dict) else None, rhash, j, profile.journal_dir, profile.decision_fallback)
+        if not dc.ok:
+            raise _slack_error(dc.code, dc.detail)
+        if dc.fallback:
+            # decision_fallback profile: no wire token — the newest unconsumed row for this exact hash is the decision
+            row = j.latest_unconsumed_decision(rhash)
+            if row is None:
+                raise _slack_error("no_decision", "no unconsumed decision recorded for this exact resolution")
+            if time.time() - row["issued_at"] > decision_mod.DECISION_MAX_AGE_S:
+                raise _slack_error("decision_expired", decision_mod.expired_detail(time.time() - row["issued_at"],
+                                                                                 decision_mod.DECISION_MAX_AGE_S))
+            m = _re.search(r"\bv=(\S+)", row["adapter"] or "")
+            hook_v, consume = (m.group(1) if m else None), (lambda: j.consume_decision(by_hash=row["token_hash"]))
+        else:
+            hook_v, consume = (dec or {}).get("v"), (lambda: j.consume_decision(dc.token))
+        if hook_v != __version__:
+            raise _slack_error("version_skew", f"the hook runs atlas-slack {hook_v or '< 0.6.0'} but this server runs "
+                                               f"{__version__} — restart the session; nothing was recorded")
+        if not consume():
+            raise _slack_error("decision_already_used", "this resolution was already recorded")
+        return _rec.report(_rec.resolve_by_hand(j, ids, resolve), op_ids=ids)
+    return _rec.report(_rec.reconcile(j, reader, profile, op_ids=ids), op_ids=ids)
+
+
+def _core_send(method: str, params: dict, as_bot: bool, provenance: dict | None, profile) -> "core.SendResult":
+    """A core write through the door: policy → provenance → decision → journal → transport."""
+    try:
+        client = get_client(as_bot=as_bot, retries=False)      # one HTTP attempt per write (no hidden SDK retry)
     except Exception as e:
         raise _slack_error("token_unavailable", str(e)) from e
-
-    def transport(m: str, final_params: dict, bot: bool) -> dict:
-        return _response_data(client.api_call(m, params=_encode_nested(final_params)))
+    transport = _sdk_transport(client)
 
     try:
         return core.execute_send(method, params, as_bot, provenance, profile=profile, transport=transport,

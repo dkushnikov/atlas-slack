@@ -12,10 +12,14 @@ Verdict = `allow | needs-human | refuse` + reason + row + class + policy
 version/digest + `transitional`. The verdict is computed locally and is the
 same for every face (MCP hook, MCP server, library `Door`).
 
-Scope of this slice: `chat.postMessage` and `chat.scheduleMessage` (rows 1/2) are decided by the core;
-reads are row 0 from an explicit registry; `conversations.open` is split by
-effect (A12.10). Every other write is **transitional** — today's gate
-semantics (ask), flagged in the verdict and in the hook text.
+Scope: `CORE_METHODS` (rows 1/2 — postMessage, scheduleMessage, update, postEphemeral,
+meMessage, files.uploadV2) are decided by the core; reads are row 0 from an explicit
+registry; `conversations.open` is split by effect (A12.10). Every other write is
+**transitional** — today's gate semantics (ask), flagged in the verdict and in the hook text.
+
+The verdict is local: no network. The two exceptions are file reads for an upload (the
+bytes are hashed into the decision binding) and the comm_id first-sighting note in the journal.
+The prior text and author of a `chat.update` are read by the faces (core / hook), not here.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from atlas_slack.journal import DEFAULT_STALE_AFTER_S
 from atlas_slack.provenance import (
     AUTONOMOUS, CLASSES, CLASS_VOICE, Provenance, ProvenanceError, op_hash, synthesize,
 )
@@ -58,13 +63,20 @@ READ_METHODS = frozenset({
     "users.lookupByEmail", "users.profile.get",
 })
 
-# chat.scheduleMessage joined the core 2026-10-31 (slice 2, part 1): `post_at` is bound into the
-# decision as `scheduled_for`; the message leaves at post_at without a fresh look (migration rule
-# п. 15, until Reception) — the prompt says so.
-CORE_METHODS = frozenset({"chat.postMessage", "chat.scheduleMessage"})
+# Row 1 writes decided by the core — policy → provenance → one-time decision → write-ahead journal.
+# chat.scheduleMessage joined 2026-10-31 (slice 2, part 1): `post_at` is bound into the decision as
+# `scheduled_for`; the message leaves at post_at without a fresh look (migration rule A12.15, until
+# Reception) — the prompt says so. Slice 2, part 2 (same day): chat.update (`ts` bound; the message's
+# prior text is read and journalled, the original's author must match the voice), files.uploadV2
+# (file bytes bound by sha256; `attribution: block` = composite with a child op), chat.postEphemeral
+# (`user` is a bound recipient), chat.meMessage.
+CORE_METHODS = frozenset({"chat.postMessage", "chat.scheduleMessage", "chat.update", "chat.postEphemeral",
+                          "chat.meMessage", "files.uploadV2"})
 SCHEDULE_MIN_LEAD_S = 60          # Slack refuses post_at in the past; a minute keeps clock skew out
 SCHEDULE_MAX_LEAD_S = 120 * 86400  # Slack: up to 120 days ahead
-LOCAL_METHODS = frozenset({"_rights", "_comm_id"})
+LOCAL_METHODS = frozenset({"_rights", "_comm_id", "_reconcile"})
+_TS_RE = __import__("re").compile(r"\d{1,13}\.\d{1,6}")          # fullmatch: `$` would let a trailing newline through
+_USER_ID_RE = __import__("re").compile(r"[UW][A-Z0-9]{2,}")
 
 # Writes the 0.4.0 gate auto-allows by conscious classification (issue #1):
 # stream continuation after an asked-for chat.startStream; agent-session chrome.
@@ -86,9 +98,9 @@ REFUSED_METHODS = {
 # transitional path in this slice.
 KNOWN_WRITE_ROWS = {
     **{m: 1 for m in (
-        "chat.update", "chat.delete", "chat.deleteScheduledMessage",
-        "chat.postEphemeral", "chat.meMessage", "chat.unfurl", "chat.startStream",
-        "files.uploadV2", "files.completeUploadExternal", "files.delete", "files.comments.delete",
+        "chat.delete", "chat.deleteScheduledMessage",
+        "chat.unfurl", "chat.startStream",
+        "files.completeUploadExternal", "files.delete", "files.comments.delete",
         "reminders.add", "conversations.setTopic", "conversations.setPurpose", "conversations.rename",
         "canvases.create", "canvases.edit", "canvases.delete", "views.publish",
         "agents.conversations.setCanvasContent",   # content into the agent conversation (3.45)
@@ -475,15 +487,18 @@ def evaluate(method: str, params: dict | None, as_bot: bool, provenance: dict | 
         ctx.warnings.append("; ".join(profile.errors))
 
     if eff.route == "local":
-        if method == "_comm_id":
+        if method in ("_comm_id", "_reconcile"):
             # Minting writes a state row (the comm's first sighting): a frozen or broken profile
             # refuses it like any other write (verifier, 2026-10-31). `_rights` stays read-only.
+            # `_reconcile` reads Slack and resolves journal outcomes — a broken profile cannot;
+            # a frozen one may (resolving an `unknown` sends nothing).
             if profile.broken:
                 return _base(ctx, REFUSE, _profile_error_code(profile),
                              f"profile {profile.name!r} is unusable: {'; '.join(profile.errors)}")
-            if profile.freeze:
+            if profile.freeze and method == "_comm_id":
                 return _base(ctx, REFUSE, "frozen", f"profile {profile.name!r} has freeze: true — no comm_id is minted")
-        return _base(ctx, ALLOW, "local", f"{method}: local pseudo-method, no Slack call")
+        return _base(ctx, ALLOW, "local", f"{method}: local pseudo-method, "
+                                          f"{'reads only' if method == '_reconcile' else 'no Slack call'}")
     bad_name = noncanonical(method)
     if bad_name:
         return _base(ctx, REFUSE, "method_noncanonical", bad_name)
@@ -534,15 +549,15 @@ def evaluate(method: str, params: dict | None, as_bot: bool, provenance: dict | 
             return _base(ctx, REFUSE, code, msg)
         if face == "library":
             return _base(ctx, REFUSE, "not_in_slice",
-                         f"{method}: transitional method — the library face executes only the v2 slice "
-                         "(chat.postMessage, chat.scheduleMessage and reads)")
+                         f"{method}: transitional method — the library face executes only the core methods "
+                         f"({', '.join(sorted(CORE_METHODS))}) and reads")
         if method in TRANSITIONAL_ALLOWED_WRITES:
             return _base(ctx, ALLOW, "transitional_allowed", f"{method}: {eff.note} (transitional)")
         text = open_reason(params) if method == "conversations.open" else f"Slack write: {method}"
         return _base(ctx, NEEDS_HUMAN, "transitional",
                      f"{text} (transitional — not yet under the v2 core; today's gate semantics)")
 
-    # ------------------------------------------- core: chat.postMessage / chat.scheduleMessage
+    # ------------------------------------------------------------- core (CORE_METHODS)
     return _evaluate_send(ctx, provenance, face=face, manifest=manifest, journal=journal,
                           journal_error=journal_error, now=now, record_sighting=record_sighting)
 
@@ -572,8 +587,12 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
         ctx.refuse("class_not_in_manifest", f"provenance class {prov.cls} ≠ manifest class {manifest['cls']}")
 
     channel = params.get("channel")
-    if not isinstance(channel, str) or not channel:
-        ctx.refuse("missing_params", f"{ctx.method} needs `channel` (id string)")
+    if (not isinstance(channel, str) or not channel) and not (ctx.method == "files.uploadV2" and "channels" in params):
+        ctx.refuse("missing_params", f"{ctx.method} needs `channel` (id string)")   # `channels` → the upload branch says how
+    from atlas_slack import shaping as _shaping
+    blocks_problem = _shaping.caller_blocks_problem(params)
+    if blocks_problem:
+        ctx.refuse("invalid_blocks", blocks_problem)      # a shape Slack would reject — no prompt for it
     if ctx.method == "chat.scheduleMessage":
         post_at = params.get("post_at")
         import math
@@ -598,6 +617,77 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
                                                 f"{int(post_at_f)}")
         ctx.warnings.append("scheduled send — leaves at post_at without a fresh look (migration rule A12.15, "
                             "until Reception)")
+    elif ctx.method == "chat.update":
+        ts = params.get("ts")
+        if not isinstance(ts, str) or not _TS_RE.fullmatch(ts):
+            ctx.refuse("missing_params", "chat.update needs `ts` (the message timestamp string, e.g. \"1700000000.123456\")")
+        if not (isinstance(params.get("text"), str) and params["text"]) and not params.get("blocks") \
+                and not params.get("attachments"):
+            ctx.refuse("missing_params", "chat.update needs the new `text` (or `blocks`)")
+    elif ctx.method == "chat.postEphemeral":
+        user = params.get("user")
+        if not isinstance(user, str) or not _USER_ID_RE.fullmatch(user):
+            ctx.refuse("missing_params", "chat.postEphemeral needs `user` (the viewer's user id)")
+        elif user not in prov.target.get("users", []):
+            # the one viewer is the recipient: bound into the decision, checked against deny lists
+            prov.target["users"] = [*prov.target.get("users", []), user]
+        ctx.warnings.append("ephemeral — visible to one person only, never in history; an unknown outcome "
+                            "cannot be reconciled against Slack")
+    elif ctx.method == "chat.meMessage":
+        if not (isinstance(params.get("text"), str) and params["text"]):
+            ctx.refuse("missing_params", "chat.meMessage needs `text`")
+    elif ctx.method == "files.uploadV2":
+        from atlas_slack import shaping as _shaping
+        try:
+            prepared = _shaping.prepare_upload(params)
+            hashes = _shaping.upload_file_hashes(prepared)
+        except _shaping.ShapingError as e:
+            ctx.refuse(e.code, e.detail)
+            hashes = None
+        except OSError as e:
+            ctx.refuse("file_not_found", f"cannot read the upload: {e}")
+            hashes = None
+        if hashes:
+            if prov.file_sha256 is None:
+                prov.file_sha256 = hashes
+            elif prov.file_sha256 != hashes:
+                ctx.refuse("file_mismatch", "provenance file_sha256 ≠ the sha256 of the file(s) on disk — "
+                                            "the file changed since it was declared")
+        if _shaping.upload_block_mode(params, ctx.as_bot):
+            ctx.warnings.append("composite op: the upload, then the comment as a separate attributed post "
+                                "(child op) — one decision covers both")
+    meta = params.get("metadata")
+    if isinstance(meta, str):
+        try:
+            meta = __import__("json").loads(meta)
+        except ValueError:
+            meta = None
+    if "metadata" in params and ctx.method == "chat.scheduleMessage":
+        # Slack: a scheduled message with `metadata` is accepted (scheduled_message_id) and then never posts
+        ctx.refuse("invalid_arguments", "chat.scheduleMessage with `metadata` is accepted by Slack and never posted "
+                                        "(Slack docs bug alert) — drop `metadata`")
+    elif isinstance(meta, dict) and meta.get("event_type") == _shaping.METADATA_EVENT_TYPE:
+        # the door's own event type is the reconciliation handle: a caller may not forge one (it could make
+        # _reconcile resolve another op against this message) nor rewrite an original's via an edit (verifier)
+        ctx.refuse("metadata_reserved", f"metadata.event_type {_shaping.METADATA_EVENT_TYPE!r} is the door's own handle — "
+                                        "drop it; the door sets it on bot sends itself")
+    elif "metadata" in params and ctx.method == "chat.update":
+        ctx.warnings.append("caller metadata on an edit replaces the message's existing metadata (the original post's "
+                            "handle included); with the new text in place the original post can no longer be reconciled "
+                            "from Slack — if its outcome is unknown, resolve it first")
+    elif ctx.as_bot and "metadata" in params and ctx.method in _shaping.METADATA_METHODS:
+        ctx.warnings.append("caller metadata kept — the op id is not in the message; an unknown outcome reconciles by text")
+    if ctx.method == "chat.update" and not prov.comm_id and journal is not None and isinstance(params.get("ts"), str):
+        # An edit is a new version of the communication the post belongs to: inherit its comm_id from the
+        # journal row behind `ts` (MC live check 2026-10-31: the agent omitted it and the door minted a second
+        # comm, losing the ledger ↔ journal link). Before the hash, so the hook and the server bind the same id.
+        try:
+            origin = journal.find_by_slack_ts(params["ts"], channel if isinstance(channel, str) else None)
+        except Exception:  # noqa: BLE001 — a journal hiccup here is not a refusal; the door mints as before
+            origin = None
+        if origin and origin.get("comm_id"):
+            prov.comm_id = origin["comm_id"]
+            ctx.warnings.append(f"edit of op {origin['op_id']} — comm_id {origin['comm_id']} inherited from the post")
     t_ch = prov.target.get("channel")
     if t_ch and channel and t_ch != channel:
         ctx.refuse("target_mismatch", f"provenance target {t_ch} ≠ params.channel {channel}")
@@ -673,13 +763,53 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
                 ctx.refuse("ttl_expired", f"comm_id {prov.comm_id} first seen {int(now - first)} s ago, "
                                           f"ttl_s={int(prov.ttl_s)} (A5.2)")
             prior = [r for r in journal.find_by_comm_id(prov.comm_id) if r["outcome"] in BLOCKING_OUTCOMES]
-            if prior and not prov.resend:
+            unresolved = [r for r in prior if r["outcome"] == "unknown"]
+            if unresolved:
+                # an `unknown` is resolved by reconciliation, never by a resend (invariant viii)
+                ctx.refuse("reconcile_required",
+                           f"comm_id {prov.comm_id} has {len(unresolved)} write(s) with an unknown outcome "
+                           f"(op {unresolved[0]['op_id']}) — run slack_api(\"_reconcile\") first; a resend "
+                           "before that could post it twice")
+            elif prior and not prov.resend and ctx.method != "chat.update":
+                # an edit is a new version of the same communication, not a second send (A4: a comm
+                # «может иметь правки») — it carries the original's comm_id without `resend`
                 ctx.refuse("duplicate_comm_id",
                            f"comm_id {prov.comm_id} already has {len(prior)} write(s) "
                            f"({', '.join(r['outcome'] for r in prior)}); pass resend=true with a fresh decision "
                            "(invariant ix)")
-        elif prov.ttl_s is not None:
-            ctx.warnings.append("ttl_s without comm_id — the door cannot track prepared_at, ttl not enforced")
+        else:
+            if prov.ttl_s is not None:
+                ctx.warnings.append("ttl_s without comm_id — the door cannot track prepared_at, ttl not enforced")
+            # No comm_id → a fresh one is minted per send, so the comm_id rule cannot stop a blind repeat (a job
+            # retrying on error after an ambiguous failure — verifier probe 2026-10-31). The same text to the same
+            # channel while an `unknown` row of it exists is refused until that row is reconciled.
+            text = params.get("text") if isinstance(params.get("text"), str) else None
+            if text:
+                import json as _json
+                for r in journal.unknown_like(ctx.method, channel):
+                    try:
+                        prior_params = _json.loads(r["payload_json"]).get("params") or {}
+                    except (ValueError, AttributeError):
+                        prior_params = {}
+                    prior_text = prior_params.get("text")
+                    def _at(v):
+                        try:
+                            return int(float(v)) if v is not None and not isinstance(v, bool) else None
+                        except (TypeError, ValueError):
+                            return str(v)
+                    same_place = prior_params.get("thread_ts") == params.get("thread_ts") and \
+                        _at(prior_params.get("post_at")) == _at(params.get("post_at"))
+                    if same_place and isinstance(prior_text, str) and " ".join(prior_text.split()) == " ".join(text.split()):
+                        if r["outcome"] == "pending":
+                            ctx.refuse("reconcile_required",
+                                       f"the same text to {channel} has a write still in flight or whose process died less than "
+                                       f"{DEFAULT_STALE_AFTER_S // 60} min ago (op {r['op_id']}, comm {r['comm_id']}, pending) — wait, "
+                                       "then run slack_api(\"_reconcile\"); a repeat could post it twice")
+                        else:
+                            ctx.refuse("reconcile_required",
+                                       f"the same text to {channel} has a write with an unknown outcome (op {r['op_id']}, "
+                                       f"comm {r['comm_id']}) — run slack_api(\"_reconcile\") first; a repeat could post it twice")
+                        break
 
     h = op_hash(ctx.method, params, ctx.as_bot, prov, profile.name)
     extra = dict(cls=prov.cls, op_hash=h, provenance=prov.to_dict(), channel=channel,

@@ -69,7 +69,7 @@ def mock_webclient():
     that need to distinguish modes assert on get_client call args directly.
     """
     mock = MagicMock()
-    def fake_get_client(as_bot: bool = False):
+    def fake_get_client(as_bot: bool = False, **_kw):
         return mock
     with patch("atlas_slack.gateway.get_client", side_effect=fake_get_client) as g_gw, \
          patch("atlas_slack.tools.get_client", side_effect=fake_get_client) as g_tools:

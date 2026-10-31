@@ -335,9 +335,41 @@ class Journal:
         row = self._exec("SELECT * FROM ops WHERE op_id=?", (op_id,)).fetchone()
         return dict(row) if row else None
 
+    def find_by_slack_ts(self, slack_ts: str, channel: str | None = None) -> dict | None:
+        """The post behind a Slack message ts — the write that created it, never an edit of it (an ok
+        `chat.update` row stores the same ts; a second edit must still point at the post — verifier)."""
+        rows = self._exec("SELECT * FROM ops WHERE slack_ts=? AND outcome='ok' AND method<>'chat.update' "
+                          "ORDER BY intent_at ASC", (slack_ts,)).fetchall()
+        for r in rows:
+            if channel is None:
+                return dict(r)
+            try:
+                tgt = json.loads(r["target_json"] or "{}")
+            except ValueError:
+                continue
+            if isinstance(tgt, dict) and tgt.get("channel") == channel:
+                return dict(r)
+        return None
+
     def find_by_comm_id(self, comm_id: str) -> list[dict]:
         rows = self._exec("SELECT * FROM ops WHERE comm_id=? ORDER BY intent_at", (comm_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    def unknown_like(self, method: str, channel: str | None) -> list[dict]:
+        """`unknown` (and still `pending`) rows of the same method and channel — the blind-repeat guard for a
+        send without comm_id. A `pending` row is a call in flight or a process that died minutes ago: a repeat
+        of it is the same risk until it turns `unknown` and is reconciled."""
+        rows = self._exec("SELECT * FROM ops WHERE outcome IN ('unknown','pending') AND method=? ORDER BY intent_at",
+                          (method,)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                tgt = json.loads(r["target_json"] or "{}")
+            except ValueError:
+                tgt = {}
+            if channel is None or tgt.get("channel") == channel:
+                out.append(dict(r))
+        return out
 
     def ops(self, outcome: str | None = None) -> list[dict]:
         if outcome:
@@ -382,6 +414,18 @@ class Journal:
 
     def get_decision(self, token: str) -> dict | None:
         row = self._exec("SELECT * FROM decisions WHERE token_hash=?", (token_hash(token),)).fetchone()
+        return dict(row) if row else None
+
+    def consume_decision(self, token: str | None = None, *, by_hash: str | None = None) -> bool:
+        """Consume a decision that covers no ops row (a manual reconcile resolution). True once."""
+        th = by_hash if by_hash is not None else token_hash(token)
+        cur = self._exec("UPDATE decisions SET consumed_at=? WHERE token_hash=? AND consumed_at IS NULL", (time.time(), th))
+        return cur.rowcount == 1
+
+    def latest_unconsumed_decision(self, op_hash: str) -> dict | None:
+        """The row the fallback path would consume (`decision_fallback: true`) — read before reserve."""
+        row = self._exec("SELECT * FROM decisions WHERE op_hash=? AND consumed_at IS NULL "
+                         "ORDER BY issued_at DESC LIMIT 1", (op_hash,)).fetchone()
         return dict(row) if row else None
 
     # ---------------------------------------------------------------- calls

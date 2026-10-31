@@ -330,8 +330,8 @@ def test_10_crash_between_call_and_outcome_leaves_pending_then_unknown(env):
     assert restarted.get_op(op_id)["outcome"] == "unknown"
     assert len(env.transport.calls) == 1          # no automatic retry
     env.transport.exc = None
-    refused(env, ti, "decision_already_used")     # the same approval cannot re-send it
-    assert len(env.transport.calls) == 1
+    refused(env, ti, "reconcile_required")        # the same send again after an unknown: reconcile first (0.6.0);
+    assert len(env.transport.calls) == 1          # the consumed approval would refuse decision_already_used next
 
 
 def test_10b_ambiguous_transport_error_is_unknown_not_retried(env):
@@ -578,8 +578,11 @@ channels:
 
 def test_17e_door_never_runs_transitional_writes(env):
     door = Door(transport=env.transport)
-    for method in ("chat.appendStream", "agents.sessions.setStatus", "chat.update", "conversations.open"):
+    for method in ("chat.appendStream", "agents.sessions.setStatus", "chat.delete", "conversations.open"):
         assert door.call(method, {"channel": CHANNEL}, as_bot=True).verdict.reason == "not_in_slice", method
+    # a core write without a decision adapter is refused too — never auto-allowed (slice 2: chat.update is core)
+    r = door.call("chat.update", {"channel": CHANNEL, "ts": "1700000000.000001", "text": "x"}, as_bot=True)
+    assert r.verdict.reason == "no_decision_adapter"
     assert env.transport.calls == []
 
 

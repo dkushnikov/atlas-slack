@@ -68,11 +68,16 @@ class TestSlackApiGate:
         """The conversations.open hint points here — it must actually be a read."""
         assert api("users.conversations")["permissionDecision"] == "allow"
 
-    def test_upload_v2_asks(self):
-        """files.uploadV2 (UPL-002, SDK-mapped) is a write — gated like completeUploadExternal."""
-        out = api("files.uploadV2", {"channel": "C1", "file": "/tmp/x.txt"})
+    def test_upload_v2_asks(self, tmp_path):
+        """files.uploadV2 is a core send (slice 2): an existing file asks with the file named;
+        a missing one is refused before any prompt (file_not_found)."""
+        f = tmp_path / "x.txt"
+        f.write_text("hello")
+        out = api("files.uploadV2", {"channel": "C1", "file": str(f)})
         assert out["permissionDecision"] == "ask"
-        assert "files.uploadV2" in out["permissionDecisionReason"]
+        assert "📎 x.txt" in out["permissionDecisionReason"]
+        missing = api("files.uploadV2", {"channel": "C1", "file": str(tmp_path / "nope.txt")})
+        assert missing["permissionDecision"] == "deny" and "file_not_found" in missing["permissionDecisionReason"]
 
 
 class TestConversationsOpenHint:

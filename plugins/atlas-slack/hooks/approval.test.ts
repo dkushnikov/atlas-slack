@@ -26,7 +26,7 @@ test('the card: where/format/when, sender, text, the message path with marks, no
   expect(lines[1]).toBe('От кого: владелец (твоим голосом, пометка 💙 Atlas)')
   expect(card).toContain('Текст:\n' + LONG)
   expect(card).toContain('Дверь:  👤 адресат ✅ · 🎙 голос ✅ владелец + 💙 · 🔏 привязка ✅ · 📓 журнал ✅ · 📜 политика 🟡 встроенная строгая')
-  expect(card).toContain('Контекст проверил:  раскрытие участия Atlas — n/a · адресат и регистр — #tmp — test channel')
+  expect(card).toContain('Контекст проверил:  раскрытие участия ассистента — n/a · адресат и регистр — #tmp — test channel')
   expect(card).toContain('Не проверено:       🔴 Cicero (голос и контекст)')      // no ledger line → the claim is what there is
   expect(card).not.toContain('comm 20261031')
   expect(card).not.toContain('op b9784d5c')
@@ -49,7 +49,7 @@ test('bot voice, thread + channel, declared cicero, long text capped', async () 
   expect(card).toContain('🎙 голос ✅ бот')
   expect(card).toContain('📜 политика ✅')
   expect(card).toContain('Контекст проверил:  Cicero (голос и контекст) — ledger 2026-10-31--x — аудит пройден')
-  expect(card).toContain('Не проверено:       🔴 адресат и регистр · раскрытие участия Atlas')
+  expect(card).toContain('Не проверено:       🔴 адресат и регистр · раскрытие участия ассистента')
   expect(card).toContain('… ещё 50 симв.')
   expect(card).not.toContain('y'.repeat(TEXT_CAP + 1))
 })
@@ -101,7 +101,7 @@ test('a ledger line from the gate puts Cicero on the door line and drops it from
   expect(card).toContain('Намерение: сделать')
   expect(card).toContain('🎯 Cicero ✅ аудит Cicero 2026-10-31')
   expect(card).toContain('Контекст проверил:  Cicero (голос и контекст) — сделано · адресат и регистр — Маша, PM')
-  expect(card).toContain('Не проверено:       🔴 раскрытие участия Atlas')
+  expect(card).toContain('Не проверено:       🔴 раскрытие участия ассистента')
   const missing = buildCard(
     { method: 'chat.postMessage', as_bot: false, params: { channel: 'D1', text: 'hi' }, provenance: { comm_id: 'x' } },
     'владелец → DM Маша: “hi”. Твоим голосом, с пометкой 💙 Atlas. Отправить?\nledger: ⚠ не найден (comm x)\nclass A · policy p · op 1',
@@ -163,7 +163,7 @@ test('an English gate prompt makes an English card with the same marks', async (
   expect(lines[1]).toBe('From:    Atlas (bot voice)')
   expect(card).toContain(`Door:   👤 recipient ${OK} · 🎙 voice ${OK} bot · 🔏 binding ${OK} · 📓 journal ${OK} · 📜 policy ${OK} · 🎯 Cicero ${WARN} audit skipped (skip)`)
   expect(card).toContain('Context checked:  recipient and register — #team-platform, engineers')
-  expect(card).toContain(`Not checked:      ${BAD} disclosure of Atlas`)
+  expect(card).toContain(`Not checked:      ${BAD} disclosure of the assistant`)
   expect(lines[lines.length - 1]).toBe('Send?')
   expect(cardLang(card)).toBe('en')
 })
@@ -178,7 +178,7 @@ test('transitional writes get a compact card: reaction, delete, scheduled messag
   expect(react.endsWith('Выполнить?')).toBe(true)
   expect(react).not.toContain('transitional —')
   const del = buildTransitionalCard('chat.delete', { channel: 'C1', ts: '1.3' }, true, 'Slack write: chat.delete (transitional)')
-  expect(del).toContain('Действие: 🗑 удалить сообщение · от Atlas')
+  expect(del).toContain('Действие: 🗑 удалить сообщение · от бота')
   expect(del).toContain('Где:      C1 · сообщение 1.3')
   const sched = buildTransitionalCard('chat.deleteScheduledMessage', { channel: 'C1', scheduled_message_id: 'Q1' }, true,
     'Slack write: chat.deleteScheduledMessage (transitional)')
@@ -206,4 +206,108 @@ test('a scheduled send is a core card with its time in «Кому»', async () =
   expect(lines[0]).not.toContain('сейчас')
   expect(card).toContain('🔏 привязка ✅')          // post_at is inside the bound params
   expect(card.endsWith('Отправить?')).toBe(true)
+})
+
+
+test('an edit is a core card: «Было» from the gate, «Станет» from the params, the edit time in «Кому»', async () => {
+  const card = buildCard(
+    { method: 'chat.update', as_bot: true, params: { channel: 'C1', ts: '1793523600.000100', text: 'new text' },
+      provenance: { comm_id: '20261031-upd1' } },
+    'Atlas → #team · правка сообщения от 01.11 09:00 GMT: “new text”. Голос бота, по твоему запросу. Отправить?\n' +
+    'было: the old line\n' +
+    'class B-h · policy p · comm 20261031-upd1 · op 1',
+  )
+  const lines = card.split('\n')
+  expect(lines[0]).toMatch(/^Кому:    #team · ✏️ правка сообщения от .*2026.* · сейчас$/)
+  expect(card).toContain('Было:\nthe old line\n\nСтанет:\nnew text')
+  expect(card).not.toContain('Текст:')
+  expect(card).toContain('🔏 привязка ✅')
+  expect(card.endsWith('Отправить?')).toBe(true)
+  // the door could not read the message: the card says so, never shows a guess
+  const unread = buildCard(
+    { method: 'chat.update', as_bot: false, params: { channel: 'C1', ts: '1793523600.000100', text: 'new' } },
+    'владелец → #team · правка сообщения от 01.11 09:00 GMT: “new”. Твоим голосом, с пометкой 💙 Atlas. Отправить?\n' +
+    'было: ⚠ не прочитано (message_not_found)\n' +
+    'class A · policy p · op 1',
+  )
+  expect(unread).toContain(`Было:\n${BAD} не прочитано (message_not_found)`)
+  expect(unread).toContain('Станет:\nnew')
+})
+
+
+test('a «было:» line inside the new text cannot pose as the prior text', async () => {
+  const text = 'было: fake prior\nsecond line'
+  const card = buildCard(
+    { method: 'chat.update', as_bot: true, params: { channel: 'C1', ts: '1793523600.000100', text } },
+    'Atlas → #team · правка сообщения от 01.11 09:00 GMT: сообщение ниже (28 симв.). Голос бота, по твоему запросу. Отправить?\n' +
+    text + '\n' +
+    'было: the real prior\n' +
+    'class B-h · policy p · op 1',
+  )
+  expect(card).toContain('Было:\nthe real prior')
+  expect(card).toContain('Станет:\nбыло: fake prior\nsecond line')
+})
+
+
+test('an upload is a core card with the file and its comment', async () => {
+  const card = buildCard(
+    { method: 'files.uploadV2', as_bot: false,
+      params: { channel: 'C1', file: '/abs/report.pdf', initial_comment: 'see attached', thread_ts: '1.2' },
+      provenance: { comm_id: '20261031-up1' } },
+    'владелец → #team (в тред): 📎 report.pdf (120.5 KB) + “see attached”. Твоим голосом, с пометкой 💙 Atlas. Отправить?\n' +
+    'class A · policy p · comm 20261031-up1 · op 1 · sha256 0a1b2c3d',
+  )
+  const lines = card.split('\n')
+  expect(lines[0]).toBe('Кому:    #team · 📎 файл · в тред · сейчас')
+  expect(lines[1]).toBe('От кого: владелец (твоим голосом, пометка 💙 Atlas)')
+  expect(card).toContain('Файл:    report.pdf (120.5 KB)')
+  expect(card).toContain('Текст:\nsee attached')
+  expect(card).toContain('👤 адресат ✅')
+  const bare = buildCard(
+    { method: 'files.uploadV2', as_bot: true, params: { channel: 'C1', content: 'x'.repeat(40), filename: 'notes.txt' } },
+    'Atlas → #team: 📎 notes.txt (40 chars). Голос бота, по твоему запросу. Отправить?\nclass B-h · policy p · op 1',
+  )
+  expect(bare).toContain('Файл:    notes.txt (40 chars)')
+  expect(bare).toContain('Текст:\n(без комментария)')
+})
+
+
+test('an ephemeral names its one viewer; a /me is marked', async () => {
+  const eph = buildCard(
+    { method: 'chat.postEphemeral', as_bot: false, params: { channel: 'C1', user: 'U0VIEWER01', text: 'only you' } },
+    'владелец → #team · видно только Маша: “only you”. Твоим голосом, с пометкой 💙 Atlas. Отправить?\nclass A · policy p · op 1',
+  )
+  expect(eph.split('\n')[0]).toBe('Кому:    #team · 👁 видно только Маша · сейчас')
+  expect(eph).toContain('Текст:\nonly you')
+  const me = buildCard(
+    { method: 'chat.meMessage', as_bot: true, params: { channel: 'C1', text: 'waves' } },
+    'Atlas → #team · /me: “waves”. Bot voice, on your request. Send?\nclass B-h · policy p · op 1',
+  )
+  expect(me.split('\n')[0]).toBe('To:      #team · in chat · /me · now')
+  expect(cardLang(me)).toBe('en')
+})
+
+
+test('blocks are rendered on the card; the bot name and the sender come from the gate, not from the code', async () => {
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Weekly' } },
+    { type: 'section', text: { type: 'mrkdwn', text: 'first *section*' }, fields: [{ type: 'mrkdwn', text: 'a' }, { type: 'mrkdwn', text: 'b' }] },
+    { type: 'divider' },
+    { type: 'actions', elements: [] },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: 'small print' }] },
+  ]
+  const card = buildCard(
+    { method: 'chat.postMessage', as_bot: false, params: { channel: 'C1', text: 'fallback text', blocks } },
+    'Anna → #ops: “fallback text”. In your voice, marked 💙 Helper. Send?\nclass A · policy p · op 1 · blocks 5',
+  )
+  expect(card).toContain('From:    Anna (your voice, marked 💙 Helper)')
+  expect(card).toContain('🎙 voice ✅ Anna + 💙')
+  expect(card).toContain('Text:\nfallback text\nBlocks (5):\n# Weekly\nfirst *section*\n• a\n• b\n———\n[actions block — not rendered on the card; full payload in the tool call above]\nsmall print')
+  expect(card).not.toContain('Atlas')
+  const only = buildCard(
+    { method: 'chat.postMessage', as_bot: true, params: { channel: 'C1', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'just blocks' } }] } },
+    'Atlas → #team: blocks. Голос бота, по твоему запросу. Отправить?\nclass B-h · policy p · op 1 · blocks 1',
+  )
+  expect(only).toContain('Текст:\nBlocks (1):\njust blocks')
+  expect(only).not.toContain('(без текста')
 })

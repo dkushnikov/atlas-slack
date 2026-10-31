@@ -22,7 +22,8 @@ def test_version_skew_refuses_before_any_call(isolated_door_dirs, monkeypatch):
     ti["provenance"]["decision"]["v"] = "0.5.3"
     refused(env, ti, "version_skew")
     ti2 = env.approve(post(comm_id="skew-2"))
-    del ti2["provenance"]["decision"]["v"]                     # a pre-0.5.4 hook
+    del ti2["provenance"]["decision"]["v"]                     # a pre-0.5.4 hook: no version on the wire …
+    env.journal._conn.execute("UPDATE decisions SET adapter=replace(adapter, ' v=' || ?, '')", (__version__,))   # … nor in the row
     refused(env, ti2, "version_skew")
     assert env.transport.calls == []
     env.send(env.approve(post(comm_id="skew-3")))

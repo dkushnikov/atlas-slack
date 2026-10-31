@@ -6,7 +6,7 @@ The door validates the *structure* and binds the decision to the operation; it
 does not judge the content of the declared checks (A2).
 
 Binding: `op_hash = sha256(canonical JSON of {method, as_bot, params, cls,
-context, scheduled_for, target.users, comm_id, resend})`. The brief named {method, text, blocks, channel,
+context, scheduled_for, file_sha256, target.users, comm_id, resend})`. The brief named {method, text, blocks, channel,
 thread_ts, as_bot, scheduled_for}; this slice hashes the **whole** caller
 params (text, blocks, channel and thread_ts are inside) plus class and profile,
 so a change of *any* parameter after the decision — `reply_broadcast`,
@@ -38,8 +38,9 @@ NON_BINDING_PARAMS = frozenset({"_raw"})
 _KEYS = {
     "comm_id", "op_id", "cls", "voice", "prepared_by", "context", "target", "checks",
     "sources", "origin", "ttl_s", "scheduled_for", "prepared_at", "resend", "decision",
-    "stamp", "migration",
+    "stamp", "migration", "file_sha256",
 }
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ProvenanceError(ValueError):
@@ -89,6 +90,7 @@ class Provenance:
     origin: str = "live"
     ttl_s: float | None = None
     scheduled_for: float | None = None
+    file_sha256: list | None = None       # files.uploadV2: sha256 of each uploaded file, bound into the decision
     prepared_at: float | None = None      # caller's claim — informational; door's first sighting wins
     resend: bool = False
     decision: dict | None = None
@@ -164,11 +166,16 @@ class Provenance:
         mig = d.get("migration")
         if mig is not None and not isinstance(mig, str):
             raise ProvenanceError("migration must be a string")
+        fh = d.get("file_sha256")
+        if fh is not None and (not isinstance(fh, list) or not fh
+                               or not all(isinstance(h, str) and _SHA256_RE.match(h) for h in fh)):
+            raise ProvenanceError("file_sha256 must be a non-empty list of 64-hex sha256 strings")
         return cls(
             cls=c, voice=voice, op_id=op_id, comm_id=d.get("comm_id"), prepared_by=d.get("prepared_by"),
             context=d.get("context"), target=target, checks=dict(checks), sources=list(sources),
             origin=origin, ttl_s=float(ttl) if ttl is not None else None,
             scheduled_for=_epoch(d.get("scheduled_for"), "scheduled_for"),
+            file_sha256=list(fh) if fh else None,
             prepared_at=_epoch(d.get("prepared_at"), "prepared_at"),
             resend=resend, decision=dict(decision) if decision else None,
             stamp=dict(stamp) if stamp else None, migration=mig,
@@ -223,6 +230,8 @@ def binding_payload(method: str, params: dict, as_bot: bool, prov: Provenance | 
         "cls": prov.cls if prov else None,
         "context": context,
         "scheduled_for": prov.scheduled_for if prov else None,
+        # an upload binds to the bytes, not the path: a file rewritten after approval → decision_mismatch (A6)
+        "file_sha256": list(prov.file_sha256) if prov and prov.file_sha256 else None,
         # the approval binds to the declared recipients (a DM/MPIM target is its users),
         # the communication item and the resend intent (verifier finding 2026-10-28)
         "users": sorted((prov.target or {}).get("users") or []) if prov else [],

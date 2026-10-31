@@ -6,8 +6,9 @@ server and the library `Door` use):
 
 - allow       → permissionDecision "allow"  (reads, row 0; `_rights`; transitional continuations)
 - refuse      → "deny" with the reason (freeze, identity overrides, invalid policy, ...)
-- needs-human → "ask" with the full provenance as the prompt text; for
-                chat.postMessage (v2 core) the hook also issues a one-time
+- needs-human → "ask" with the full provenance as the prompt text; for a
+                core send (postMessage, scheduleMessage, update, postEphemeral,
+                meMessage, files.uploadV2) the hook also issues a one-time
                 decision token bound to the operation hash and returns it in
                 `updatedInput` (provenance.decision) — Claude Code runs the
                 tool with that input only after the human approves.

@@ -6,14 +6,18 @@
  * human text to three lines, so the person approves a blob (the owner, 2026-10-31).
  *
  * What: on `tool.check` for `slack_api`, when the engine's verdict is `ask` and the
- * call is a core send (chat.postMessage, chat.scheduleMessage), the mod asks the person itself through
+ * call is a core send (chat.postMessage, chat.scheduleMessage, chat.update, chat.postEphemeral,
+ * chat.meMessage, files.uploadV2 — slice 2), the mod asks the person itself through
  * `$.ui.ask` (the engine's AskUserQuestion dialog; a mod may not call that tool any
  * other way — "host check"). The *question text* is the whole card — the one part
  * of that dialog a mod controls (option hints and previews added by a `ui.render`
  * rewrite are never drawn; live checks 2026-10-31).
  *
  * The card, per the owner's sketch: where to (name · chat / thread / thread + channel ·
- * now), from whom (voice and mark), intention (from the ledger), the text (≤ 2000),
+ * now), from whom (voice and mark), intention (from the ledger), the text (≤ 2000) —
+ * for an edit «Было / Станет» (the prior text comes from the gate's `было:` line, read by
+ * the door, not claimed by the agent), for an upload the file and its comment,
+ * for an ephemeral the one viewer —
  * then one line of the door's own checks (icon · name · mark), one line of what the
  * context declared it checked (shown, not judged — A2) and one of what it did not.
  * Marks: ✅ verified · 🟡 declared / skipped / built-in policy · 🔴 missing, not
@@ -45,20 +49,22 @@ const L: Record<Lang, Record<string, string>> = {
     yes: 'Отправить', no: 'Нет', ask: 'Отправить?',
     to: 'Кому:    ', from: 'От кого: ', intention: 'Намерение: ', text: 'Текст:',
     chat: 'в чат', thread: 'в тред', threadChannel: 'в тред + в канал', now: 'сейчас',
-    botVoice: '(голос бота)', personVoice: '(твоим голосом, пометка 💙 Atlas)',
+    edit: '✏️ правка сообщения от {when}', ephemeral: '👁 видно только {user}', meFmt: '/me', upload: '📎 файл',
+    was: 'Было:', becomes: 'Станет:', wasUnread: '⚠ не прочитано', file: 'Файл:    ', noComment: '(без комментария)',
+    botVoice: '(голос бота)', personVoice: '(твоим голосом, пометка 💙 {bot})',
     more: 'ещё {n} симв. — полный текст в транскрипте выше', noText: '(без текста: {n} blocks)', inThread: '(в тред {ts})',
-    door: 'Дверь:  ', addressee: '👤 адресат', unresolved: 'id не распознан', voice: '🎙 голос', bot: 'бот', person: 'владелец + 💙',
+    door: 'Дверь:  ', addressee: '👤 адресат', unresolved: 'id не распознан', voice: '🎙 голос', bot: 'бот', person: '{sender} + 💙',
     binding: '🔏 привязка', journal: '📓 журнал', policy: '📜 политика', builtin: 'встроенная строгая', cicero: '🎯 Cicero', resend: '🔁 повтор',
     declared: 'Контекст проверил:  ', nothing: 'ничего не заявлено', missing: 'Не проверено:       ',
-    defaultSender: 'владелец', defaultBot: 'Atlas', defaultBotVoice: 'Голос бота.', defaultPersonVoice: 'Твоим голосом.',
-    lblCicero: 'Cicero (голос и контекст)', lblRecipient: 'адресат и регистр', lblVoice: 'голос', lblDisclosure: 'раскрытие участия Atlas',
+    defaultSender: 'ты', defaultBot: 'бот', defaultBotVoice: 'Голос бота.', defaultPersonVoice: 'Твоим голосом.',
+    blocks: 'Blocks ({n}):', blockHidden: '[блок {type} — не отображается на карточке; полный payload в вызове инструмента выше]',
+    lblCicero: 'Cicero (голос и контекст)', lblRecipient: 'адресат и регистр', lblVoice: 'голос', lblDisclosure: 'раскрытие участия ассистента',
     lblMark: 'пометка', lblPolicyRow: 'строка политики', lblSources: 'источники',
     notify: 'atlas-slack: нужно решение',
-    do: 'Выполнить', doAsk: 'Выполнить?', action: 'Действие: ', byBot: 'от Atlas', byYou: 'от тебя (твой аккаунт)', where: 'Где:      ', when: 'Когда:    ', message: 'сообщение', user: 'для',
-    transitional: '🔏 привязка 🔴 нет · 📓 журнал 🔴 нет — переходный путь (не через ядро двери, срез 2)',
+    do: 'Выполнить', doAsk: 'Выполнить?', action: 'Действие: ', byBot: 'от бота', byYou: 'от тебя (твой аккаунт)', where: 'Где:      ', when: 'Когда:    ', message: 'сообщение', user: 'для',
+    transitional: '🔏 привязка 🔴 нет · 📓 журнал 🔴 нет — переходный путь (не через ядро двери)',
     mReactAdd: '👍 поставить реакцию :{name}:', mReactRemove: '👎 убрать реакцию :{name}:', mDelete: '🗑 удалить сообщение',
-    mUpdate: '✏️ изменить сообщение', mSchedule: '⏰ запланировать сообщение', mEphemeral: '👁 показать сообщение только одному человеку',
-    mPinAdd: '📌 закрепить сообщение', mPinRemove: '📌 открепить сообщение', mUpload: '📎 загрузить файл {name}', mOpen: '💬 открыть DM',
+    mPinAdd: '📌 закрепить сообщение', mPinRemove: '📌 открепить сообщение', mOpen: '💬 открыть DM',
     mOther: 'Slack write: {method}',
     denyNo: 'atlas-slack: отклонено на карточке — ничего не отправлено',
     denyDismissed: 'atlas-slack: диалог одобрения закрыт (Esc) — ничего не отправлено; спроси человека, что делать дальше',
@@ -68,20 +74,22 @@ const L: Record<Lang, Record<string, string>> = {
     yes: 'Send', no: 'No', ask: 'Send?',
     to: 'To:      ', from: 'From:    ', intention: 'Intention: ', text: 'Text:',
     chat: 'in chat', thread: 'in thread', threadChannel: 'in thread + channel', now: 'now',
-    botVoice: '(bot voice)', personVoice: '(your voice, marked 💙 Atlas)',
+    edit: '✏️ edit of the message from {when}', ephemeral: '👁 visible only to {user}', meFmt: '/me', upload: '📎 file',
+    was: 'Was:', becomes: 'Becomes:', wasUnread: '⚠ not read', file: 'File:    ', noComment: '(no comment)',
+    botVoice: '(bot voice)', personVoice: '(your voice, marked 💙 {bot})',
     more: '{n} more chars — full text in the transcript above', noText: '(no text: {n} blocks)', inThread: '(thread {ts})',
-    door: 'Door:   ', addressee: '👤 recipient', unresolved: 'id unresolved', voice: '🎙 voice', bot: 'bot', person: 'you + 💙',
+    door: 'Door:   ', addressee: '👤 recipient', unresolved: 'id unresolved', voice: '🎙 voice', bot: 'bot', person: '{sender} + 💙',
     binding: '🔏 binding', journal: '📓 journal', policy: '📜 policy', builtin: 'built-in strict', cicero: '🎯 Cicero', resend: '🔁 resend',
     declared: 'Context checked:  ', nothing: 'nothing declared', missing: 'Not checked:      ',
-    defaultSender: 'You', defaultBot: 'Atlas', defaultBotVoice: 'Bot voice.', defaultPersonVoice: 'In your voice.',
-    lblCicero: 'Cicero (voice and context)', lblRecipient: 'recipient and register', lblVoice: 'voice', lblDisclosure: 'disclosure of Atlas',
+    defaultSender: 'you', defaultBot: 'the bot', defaultBotVoice: 'Bot voice.', defaultPersonVoice: 'In your voice.',
+    blocks: 'Blocks ({n}):', blockHidden: '[{type} block — not rendered on the card; full payload in the tool call above]',
+    lblCicero: 'Cicero (voice and context)', lblRecipient: 'recipient and register', lblVoice: 'voice', lblDisclosure: 'disclosure of the assistant',
     lblMark: 'mark', lblPolicyRow: 'policy row', lblSources: 'sources',
     notify: 'atlas-slack: decision needed',
-    do: 'Proceed', doAsk: 'Proceed?', action: 'Action:  ', byBot: 'by Atlas', byYou: 'by you (your account)', where: 'Where:   ', when: 'When:    ', message: 'message', user: 'for',
-    transitional: '🔏 binding 🔴 none · 📓 journal 🔴 none — transitional path (not through the door core; slice 2)',
+    do: 'Proceed', doAsk: 'Proceed?', action: 'Action:  ', byBot: 'by the bot', byYou: 'by you (your account)', where: 'Where:   ', when: 'When:    ', message: 'message', user: 'for',
+    transitional: '🔏 binding 🔴 none · 📓 journal 🔴 none — transitional path (not through the door core)',
     mReactAdd: '👍 add reaction :{name}:', mReactRemove: '👎 remove reaction :{name}:', mDelete: '🗑 delete a message',
-    mUpdate: '✏️ edit a message', mSchedule: '⏰ schedule a message', mEphemeral: '👁 show a message to one person only',
-    mPinAdd: '📌 pin a message', mPinRemove: '📌 unpin a message', mUpload: '📎 upload file {name}', mOpen: '💬 open a DM',
+    mPinAdd: '📌 pin a message', mPinRemove: '📌 unpin a message', mOpen: '💬 open a DM',
     mOther: 'Slack write: {method}',
     denyNo: 'atlas-slack: declined on the card — nothing was sent',
     denyDismissed: 'atlas-slack: the approval dialog was closed (Esc) — nothing was sent; ask the person what to do next',
@@ -92,7 +100,11 @@ const L: Record<Lang, Record<string, string>> = {
 type SlackInput = {
   method?: string
   as_bot?: boolean
-  params?: { channel?: string; text?: string; thread_ts?: string; reply_broadcast?: unknown; blocks?: unknown[]; post_at?: unknown }
+  params?: {
+    channel?: string; text?: string; thread_ts?: string; reply_broadcast?: unknown; blocks?: unknown[]; post_at?: unknown
+    ts?: unknown; user?: unknown; file?: unknown; content?: unknown; filename?: unknown; title?: unknown
+    initial_comment?: unknown; attribution?: unknown; file_uploads?: unknown[]
+  }
   provenance?: { comm_id?: string; checks?: Record<string, unknown>; sources?: unknown[]; origin?: string; resend?: boolean }
 }
 
@@ -102,12 +114,16 @@ function gateLines(reason: string | undefined): string[] {
   return raw.split('\n').map(l => l.trimEnd()).filter(l => l.length > 0)
 }
 
-// "<sender> → <target>: “…” | сообщение ниже (N симв.) | message below (N chars) | blocks. <voice sentence> Отправить?|Send?"
-const SENTENCE =
-  /^(.+?) → (.+?): (?:“[\s\S]*?”|сообщение ниже \(\d+ [^)]*\)|message below \(\d+ [^)]*\)|blocks)\.\s*(.*?)\s*(Отправить\?|Send\?)\s*$/
-// `ledger: …` / `intention: …` lines the gate adds when a ledger dir is configured (ledger.py).
+// "<sender> → <target>: “…” | сообщение ниже (N симв.) | message below (N chars) | blocks | 📎 <file> [+ “…” | + комментарий ниже (…)]. <voice sentence> Отправить?|Send?"
+const WHAT = '(?:“[\\s\\S]*?”|сообщение ниже \\(\\d+ [^)]*\\)|message below \\(\\d+ [^)]*\\)|комментарий ниже \\(\\d+ [^)]*\\)|comment below \\(\\d+ [^)]*\\)|blocks)'
+const SENTENCE = new RegExp(
+  '^(.+?) → (.+?): (?:' + WHAT + '|📎 [^\\n]+?(?: \\+ ' + WHAT + ')?)\\.\\s*(.*?)\\s*(Отправить\\?|Send\\?)\\s*$',
+)
+// `ledger: …` / `intention: …` lines the gate adds when a ledger dir is configured (ledger.py);
+// `было: …` / `was: …` — the prior text of a chat.update, read by the door before the prompt.
 const LEDGER_RE = /^ledger: (✅|☑|⚠) (.*)$/
 const INTENTION_RE = /^intention: (.+)$/
+const WAS_RE = /^(?:было|was): (.*)$/
 
 // Content checks a send to others is expected to declare; absent ones are listed as not done.
 const EXPECTED_CHECKS = ['cicero', 'recipient', 'disclosure']
@@ -129,20 +145,37 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
   const t = L[lang]
   const asBot = Boolean(input.as_bot)
   const sender = m?.[1] ?? (asBot ? t.defaultBot : t.defaultSender)
+  const botName = /💙 (\S+?)\.?$/.exec(m?.[3] ?? '')?.[1] ?? t.defaultBot!
   const targetRaw = (m?.[2] ?? input.params?.channel ?? '?')
   const unresolved = /\(unresolved\)/.test(targetRaw) || !m
-  const target = targetRaw.replace(/ \(в тред\)| \+ в канал| \(in thread\)| \+ also to the channel| · отложено на .*$| · scheduled for .*$/g, '')
+  const target = targetRaw.replace(
+    / \(в тред\)| \+ в канал| \(in thread\)| \+ also to the channel| · отложено на .*$| · scheduled for .*$| · правка сообщения от .*$| · edit of the message from .*$| · видно только .*$| · visible only to .*$| · \/me$/g,
+    '')
 
+  const method = input.method ?? ''
   const thread = Boolean(input.params?.thread_ts)
   const broadcast = String(input.params?.reply_broadcast ?? '').toLowerCase() === 'true'
-  const format = thread ? (broadcast ? t.threadChannel : t.thread) : t.chat
-  const when = input.method === 'chat.scheduleMessage' ? (whenText(input.params?.post_at, lang) ?? String(input.params?.post_at)) : t.now
+  const place = thread ? (broadcast ? t.threadChannel : t.thread) : t.chat
+  const editTime = method === 'chat.update' ? (whenText(input.params?.ts, lang) ?? String(input.params?.ts ?? '?')) : ''
+  const format = method === 'chat.update' ? fmt(t.edit!, { when: editTime })
+    : method === 'chat.postEphemeral' ? fmt(t.ephemeral!, { user: viewerText(targetRaw, lang) ?? String(input.params?.user ?? '?') })
+    : method === 'chat.meMessage' ? `${place} · ${t.meFmt}`
+    : method === 'files.uploadV2' ? `${t.upload} · ${place}`
+    : place
+  const when = method === 'chat.scheduleMessage' ? (whenText(input.params?.post_at, lang) ?? String(input.params?.post_at)) : t.now
 
-  const text = typeof input.params?.text === 'string' ? input.params.text : ''
+  const upload = method === 'files.uploadV2'
+  const rawText = upload ? input.params?.initial_comment : input.params?.text
+  const text = typeof rawText === 'string' ? rawText : ''
   const shown = text.length > TEXT_CAP
     ? text.slice(0, TEXT_CAP).trimEnd() + '\n… ' + fmt(t.more!, { n: text.length - TEXT_CAP })
     : text
-  const body = shown.length > 0 ? shown : fmt(t.noText!, { n: input.params?.blocks?.length ?? 0 })
+  const blocks = Array.isArray(input.params?.blocks) ? input.params!.blocks! : []
+  const body = [
+    shown.length > 0 ? shown : upload ? t.noComment! : blocks.length ? '' : fmt(t.noText!, { n: 0 }),
+    ...(blocks.length ? [fmt(t.blocks!, { n: blocks.length }), ...blocksText(blocks, t)] : []),
+  ].filter(l => l.length > 0).join('\n')
+  const fileLine = upload ? fileText(input.params ?? {}, targetRaw, m?.[0] ?? first) : null
 
   const checks = input.provenance?.checks ?? {}
   // Read the gate's trailer from the end: technical line, then intention?, ledger?, ⚠ policy?, checks?;
@@ -150,6 +183,7 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
   let ledgerLine: RegExpExecArray | null = null
   let intention: string | undefined
   let builtin = false
+  let was: string | undefined
   let seenLedgerOrBelow = true
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]!
@@ -160,6 +194,9 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
     if (asIntention) { intention = asIntention[1]; continue }
     if (l.startsWith('⚠') && /полити|policy/.test(l)) { builtin = true; seenLedgerOrBelow = false; continue }
     if (l.startsWith('checks:')) { seenLedgerOrBelow = false; continue }
+    // the prior text sits just above checks — one line, read by the door; a second match is message text
+    const asWas: RegExpExecArray | null = method === 'chat.update' && was === undefined ? WAS_RE.exec(l) : null
+    if (asWas) { was = asWas[1]; seenLedgerOrBelow = false; continue }
     break
   }
   if (!ledgerLine) intention = undefined          // an intention line is only trusted under a ledger line
@@ -169,7 +206,7 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
 
   const door = [
     unresolved ? `${t.addressee} ${BAD} ${t.unresolved}` : `${t.addressee} ${OK}`,
-    asBot ? `${t.voice} ${OK} ${t.bot}` : `${t.voice} ${OK} ${t.person}`,
+    asBot ? `${t.voice} ${OK} ${t.bot}` : `${t.voice} ${OK} ${fmt(t.person!, { sender })}`,
     `${t.binding} ${OK}`,
     `${t.journal} ${OK}`,
     builtin ? `${t.policy} ${WARN} ${t.builtin}` : `${t.policy} ${OK}`,
@@ -182,14 +219,16 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
   const expected = cicero ? EXPECTED_CHECKS.filter(k => k !== 'cicero') : EXPECTED_CHECKS
   const missing = expected.filter(k => !declared.some(([d]) => d === k)).map(label)
 
+  const edit = method === 'chat.update'
   return [
     `${t.to}${target} · ${format} · ${when}`,
-    `${t.from}${sender} ${asBot ? t.botVoice : t.personVoice}`,
+    `${t.from}${sender} ${asBot ? t.botVoice : fmt(t.personVoice!, { bot: botName })}`,
     ...(intention ? [`${t.intention}${intention}`] : []),
+    ...(fileLine ? [`${t.file}${fileLine}`] : []),
     '',
-    t.text!,
+    ...(edit ? [t.was!, was === undefined ? `${BAD} ${t.wasUnread}` : was.startsWith('⚠') ? `${BAD} ${was.replace(/^⚠\s*/, '')}` : was, '', t.becomes!] : [t.text!]),
     body,
-    ...(input.params?.thread_ts ? [fmt(t.inThread!, { ts: input.params.thread_ts })] : []),
+    ...(input.params?.thread_ts && !edit ? [fmt(t.inThread!, { ts: input.params.thread_ts })] : []),
     '',
     `${t.door}${door}`,
     `${t.declared}${done.length ? done.join(' · ') : t.nothing}`,
@@ -201,10 +240,56 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
 
 type AnyParams = Record<string, unknown>
 
+/** A readable rendering of Block Kit blocks — what the recipient sees instead of `text` (Codex review 2026-10-31).
+ *  header / section (+ fields) / context carry their text; divider, image are named; anything else is
+ *  flagged as not rendered here, so the person knows what the card does not show. */
+export function blocksText(blocks: unknown[], t: Record<string, string>): string[] {
+  const txt = (o: unknown): string => (o && typeof o === 'object' && typeof (o as { text?: unknown }).text === 'string')
+    ? (o as { text: string }).text : typeof o === 'string' ? o : ''
+  const out: string[] = []
+  for (const b of blocks) {
+    const blk = (b ?? {}) as { type?: string; text?: unknown; fields?: unknown[]; elements?: unknown[]; alt_text?: unknown; title?: unknown }
+    switch (blk.type) {
+      case 'header': out.push(`# ${txt(blk.text)}`); break
+      case 'section': {
+        const main = txt(blk.text)
+        const fields = Array.isArray(blk.fields) ? blk.fields.map(txt).filter(Boolean) : []
+        if (main) out.push(main)
+        if (fields.length) out.push(fields.map(f => `• ${f}`).join('\n'))
+        if (!main && !fields.length) out.push(fmt(t.blockHidden!, { type: 'section' }))
+        break
+      }
+      case 'context': out.push(Array.isArray(blk.elements) ? blk.elements.map(txt).filter(Boolean).join(' · ') : ''); break
+      case 'divider': out.push('———'); break
+      case 'image': out.push(`[image: ${txt(blk.alt_text) || txt(blk.title) || '…'}]`); break
+      default: out.push(fmt(t.blockHidden!, { type: String(blk.type ?? '?') }))
+    }
+  }
+  return out.filter(l => l.length > 0)
+}
+
 const METHOD_KEY: Record<string, string> = {
-  'reactions.add': 'mReactAdd', 'reactions.remove': 'mReactRemove', 'chat.delete': 'mDelete', 'chat.update': 'mUpdate',
-  'chat.postEphemeral': 'mEphemeral', 'pins.add': 'mPinAdd', 'pins.remove': 'mPinRemove',
-  'files.uploadV2': 'mUpload', 'conversations.open': 'mOpen',
+  'reactions.add': 'mReactAdd', 'reactions.remove': 'mReactRemove', 'chat.delete': 'mDelete',
+  'pins.add': 'mPinAdd', 'pins.remove': 'mPinRemove', 'conversations.open': 'mOpen',
+}
+
+export const CORE_METHODS = new Set(['chat.postMessage', 'chat.scheduleMessage', 'chat.update', 'chat.postEphemeral',
+  'chat.meMessage', 'files.uploadV2'])
+
+/** The viewer's name the gate resolved (« · видно только <name>» / « · visible only to <name>»). */
+function viewerText(targetRaw: string, lang: Lang): string | null {
+  const m = (lang === 'ru' ? / · видно только (.+)$/ : / · visible only to (.+)$/).exec(targetRaw)
+  return m?.[1] ?? null
+}
+
+/** The upload's file as the gate named it («📎 doc.pdf (120.5 KB)»), else from the params. */
+function fileText(params: NonNullable<SlackInput['params']>, _targetRaw: string, sentence: string): string {
+  const m = /📎 ([^\n]+?)(?: \+ (?:“|сообщение ниже|комментарий ниже|message below|comment below)|\.\s)/.exec(sentence)
+  if (m?.[1]) return m[1]
+  if (typeof params.file === 'string') return String(params.filename ?? params.title ?? params.file.split('/').pop())
+  if (typeof params.content === 'string') return `${String(params.filename ?? params.title ?? 'snippet')} (${params.content.length})`
+  if (Array.isArray(params.file_uploads)) return `${params.file_uploads.length} files`
+  return '?'
 }
 
 function whenText(postAt: unknown, lang: Lang): string | null {
@@ -265,7 +350,7 @@ export const register: Register = on => {
     const input = (e.input ?? {}) as SlackInput
     const method = input.method ?? ''
     if (!method || method.startsWith('_')) return verdict
-    const core = method === 'chat.postMessage' || method === 'chat.scheduleMessage'
+    const core = CORE_METHODS.has(method)
     // A transitional write has no names resolved and no language in its gate text: take the
     // profile's language from the core prompt we saw last, else ru (the only profile today).
     const card = core

@@ -89,7 +89,7 @@ def test_slack_api_default_uses_user_client(mock_webclient):
 def test_slack_api_as_bot_uses_bot_client(mock_webclient):
     mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
     slack_api("chat.postMessage", {"channel": "C1", "text": "hi"}, as_bot=True)
-    mock_webclient._gateway_get_client.assert_called_with(as_bot=True)
+    mock_webclient._gateway_get_client.assert_called_with(as_bot=True, retries=False)   # one HTTP attempt per write
 
 
 def test_slack_api_post_message_user_mode_injects_attribution(mock_webclient):
@@ -155,18 +155,6 @@ def test_slack_api_read_method_no_attribution(mock_webclient):
     assert call_params["query"] == "from:@owner thread:1.2"
 
 
-def test_slack_api_chat_update_user_mode_injects_attribution(mock_webclient):
-    """chat.update under user token gets attribution block (edited messages re-post as user)."""
-    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
-    slack_api("chat.update", {"channel": "C1", "ts": "1.2", "text": "edited"})
-
-    call_params = mock_webclient.api_call.call_args.kwargs["params"]
-    blocks = json.loads(call_params["blocks"])
-    assert len(blocks) == 2
-    assert blocks[1]["type"] == "context"
-    assert blocks[1]["elements"][0]["text"] == f":blue_heart: <@{ATLAS_BOT_USER_ID}>"
-
-
 def test_slack_api_chat_schedule_message_needs_a_decision_since_0_5_3(mock_webclient):
     """chat.scheduleMessage is a core send now: without a hook decision it refuses before any call
     (the attribution footer on the core path is asserted in test_v2_slice::test_s3)."""
@@ -180,21 +168,20 @@ def test_slack_api_chat_schedule_message_needs_a_decision_since_0_5_3(mock_webcl
     assert mock_webclient.api_call.call_count == 0
 
 
-def test_slack_api_chat_post_ephemeral_user_mode_injects_attribution(mock_webclient):
-    mock_webclient.api_call.return_value = {"ok": True, "message_ts": "1.2"}
-    slack_api("chat.postEphemeral", {"channel": "C1", "user": "U1", "text": "ping"})
-
-    call_params = mock_webclient.api_call.call_args.kwargs["params"]
-    assert json.loads(call_params["blocks"])[-1]["type"] == "context"
-
-
-def test_slack_api_chat_update_bot_mode_no_attribution(mock_webclient):
-    """Bot-token edits stay clean — Atlas is already the author."""
-    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
-    slack_api("chat.update", {"channel": "C1", "ts": "1.2", "text": "edited"}, as_bot=True)
-
-    call_params = mock_webclient.api_call.call_args.kwargs["params"]
-    assert "blocks" not in call_params
+@pytest.mark.parametrize("method,params,as_bot", [
+    ("chat.update", {"channel": "C1", "ts": "1700000000.000002", "text": "edited"}, False),
+    ("chat.update", {"channel": "C1", "ts": "1700000000.000002", "text": "edited"}, True),
+    ("chat.postEphemeral", {"channel": "C1", "user": "U0VIEWER01", "text": "ping"}, False),
+    ("chat.meMessage", {"channel": "C1", "text": "shrugs"}, False),
+    ("chat.meMessage", {"channel": "C1", "text": "shrugs"}, True),
+])
+def test_core_methods_since_0_6_0_need_a_decision(mock_webclient, method, params, as_bot):
+    """chat.update / postEphemeral / meMessage are core sends now (slice 2): without a hook decision they
+    refuse before any call. Attribution on the core path: test_v2_slice2."""
+    with pytest.raises(ToolError) as e:
+        slack_api(method, params, as_bot=as_bot)
+    assert "no_decision" in str(e.value)
+    mock_webclient.api_call.assert_not_called()
 
 
 def test_slack_api_files_complete_upload_initial_comment_gets_suffix(mock_webclient):
@@ -226,25 +213,6 @@ def test_slack_api_files_complete_upload_no_initial_comment_untouched(mock_webcl
     call_params = mock_webclient.api_call.call_args.kwargs["params"]
     assert "initial_comment" not in call_params
     assert "blocks" not in call_params
-
-
-def test_slack_api_chat_me_message_user_mode_gets_suffix(mock_webclient):
-    """chat.meMessage posts italicized /me text under user token — no blocks support → suffix path."""
-    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
-    slack_api("chat.meMessage", {"channel": "C1", "text": "shrugs"})
-
-    call_params = mock_webclient.api_call.call_args.kwargs["params"]
-    assert "blocks" not in call_params
-    assert call_params["text"].startswith("shrugs")
-    assert call_params["text"].endswith(f":blue_heart: <@{ATLAS_BOT_USER_ID}>")
-
-
-def test_slack_api_chat_me_message_bot_mode_no_suffix(mock_webclient):
-    mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
-    slack_api("chat.meMessage", {"channel": "C1", "text": "shrugs"}, as_bot=True)
-
-    call_params = mock_webclient.api_call.call_args.kwargs["params"]
-    assert call_params["text"] == "shrugs"
 
 
 def test_slack_api_files_complete_upload_bot_mode_no_suffix(mock_webclient):
@@ -371,19 +339,13 @@ def test_smoke_error_hint_via_gateway(mock_webclient):
     assert "DM channel IDs are per-viewer" in str(exc_info.value)
 
 
-def test_smoke_file_upload_permalink_returned(mock_webclient):
-    """files.uploadV2 dispatches to WebClient.files_upload_v2 (never api_call —
-    UPL-002: it is an SDK method, not a Web API endpoint) and the render
-    surfaces the permalink."""
-    mock_webclient.files_upload_v2.return_value = {
-        "ok": True,
-        "files": [{"id": "F1", "name": "doc.pdf",
-                   "permalink": "https://x.slack.com/F1"}],
-    }
-    result = slack_api("files.uploadV2", {"channel": "C1", "content": "x"}, as_bot=True)
-    assert "https://x.slack.com/F1" in result
+def test_smoke_file_upload_needs_a_decision_since_0_6_0(mock_webclient):
+    """files.uploadV2 is a core send (slice 2): without a hook decision nothing is uploaded.
+    The SDK dispatch (files_upload_v2, never api_call) and the permalink render: test_v2_slice2."""
+    with pytest.raises(ToolError, match="no_decision"):
+        slack_api("files.uploadV2", {"channel": "C1", "content": "x"}, as_bot=True)
     mock_webclient.api_call.assert_not_called()
-    mock_webclient.files_upload_v2.assert_called_once_with(channel="C1", content="x")
+    mock_webclient.files_upload_v2.assert_not_called()
 
 
 def test_smoke_channel_info_topic_purpose_returned(mock_webclient):
@@ -504,22 +466,11 @@ def test_auto_split_sections_carry_expand(mock_webclient):
 
 # === UPL-002 — files.uploadV2 mapped to WebClient.files_upload_v2 ===
 
-def test_upload_v2_channel_string_passes_through(mock_webclient, tmp_path):
-    """UPL-001 regression: one destination travels as `channel` (string), never a
-    comma-joined string inside `channels` (List[str] → joined char by char)."""
-    f = tmp_path / "doc.txt"
-    f.write_text("hello")
-    mock_webclient.files_upload_v2.return_value = {"ok": True, "file": {"id": "F1", "name": "doc.txt"}}
-    slack_api("files.uploadV2", {"file": str(f), "channel": "D06MG7QF3ME", "title": "Doc"}, as_bot=True)
-    kw = mock_webclient.files_upload_v2.call_args.kwargs
-    assert kw["channel"] == "D06MG7QF3ME"
-    assert kw["file"] == str(f)
-    assert "channels" not in kw
-
-
-def test_upload_v2_channels_string_refused(mock_webclient):
-    with pytest.raises(ToolError, match="`channels` must be a list"):
-        slack_api("files.uploadV2", {"content": "x", "channels": "D06MG7QF3ME"}, as_bot=True)
+def test_upload_v2_channels_refused(mock_webclient):
+    """UPL-001 regression, tightened in slice 2: `channels` (string or list) is refused — one `channel`."""
+    for ch in ("D06MG7QF3ME", ["C1", "C2"]):
+        with pytest.raises(ToolError, match="invalid_arguments"):
+            slack_api("files.uploadV2", {"content": "x", "channels": ch}, as_bot=True)
     mock_webclient.files_upload_v2.assert_not_called()
 
 
@@ -533,35 +484,6 @@ def test_upload_v2_relative_or_missing_file_refused(mock_webclient, tmp_path):
     mock_webclient.files_upload_v2.assert_not_called()
 
 
-def test_upload_v2_user_mode_suffix_on_initial_comment(mock_webclient):
-    mock_webclient.files_upload_v2.return_value = {"ok": True, "file": {"id": "F1", "name": "x"}}
-    slack_api("files.uploadV2", {"content": "x", "channel": "C1", "initial_comment": "see attached"})
-    kw = mock_webclient.files_upload_v2.call_args.kwargs
-    assert kw["initial_comment"].startswith("see attached")
-    assert kw["initial_comment"].endswith(f":blue_heart: <@{ATLAS_BOT_USER_ID}>")
-    assert "attribution" not in kw
-    mock_webclient.api_call.assert_not_called()
-
-
-def test_upload_v2_bot_mode_untouched(mock_webclient):
-    mock_webclient.files_upload_v2.return_value = {"ok": True, "file": {"id": "F1", "name": "x"}}
-    slack_api(
-        "files.uploadV2",
-        {"content": "x", "channel": "C1", "initial_comment": "from Atlas", "attribution": "block"},
-        as_bot=True,
-    )
-    kw = mock_webclient.files_upload_v2.call_args.kwargs
-    assert kw["initial_comment"] == "from Atlas"
-    assert "attribution" not in kw          # never forwarded to the SDK
-    mock_webclient.api_call.assert_not_called()   # bot: no second message
-
-
-def test_upload_v2_sdk_error_is_structural(mock_webclient):
-    mock_webclient.files_upload_v2.side_effect = SlackApiError("boom", {"ok": False, "error": "not_in_channel"})
-    with pytest.raises(ToolError, match="not_in_channel"):
-        slack_api("files.uploadV2", {"content": "x", "channel": "C1"}, as_bot=True)
-
-
 def test_upload_v2_file_uploads_paths_checked(mock_webclient, tmp_path):
     ok = tmp_path / "a.txt"
     ok.write_text("a")
@@ -569,14 +491,6 @@ def test_upload_v2_file_uploads_paths_checked(mock_webclient, tmp_path):
         slack_api("files.uploadV2", {"channel": "C1", "file_uploads": [
             {"file": str(ok)}, {"file": "rel.txt"}]}, as_bot=True)
     mock_webclient.files_upload_v2.assert_not_called()
-
-    mock_webclient.files_upload_v2.return_value = {"ok": True, "files": [
-        {"id": "F1", "name": "a.txt"}, {"id": "F2", "name": "b"}]}
-    slack_api("files.uploadV2", {"channel": "C1", "file_uploads": [
-        {"file": str(ok), "title": "A"}, {"content": "b", "filename": "b"}]}, as_bot=True)
-    kw = mock_webclient.files_upload_v2.call_args.kwargs
-    assert kw["file_uploads"][0]["title"] == "A"
-    assert kw["file_uploads"][1] == {"content": "b", "filename": "b"}
 
 
 # === v1.3 (MC ask 2026-10-22) — bot auto-split, _raw flag ===
@@ -606,8 +520,9 @@ def test_bot_short_text_and_caller_blocks_untouched(mock_webclient):
     slack_api("chat.postMessage", {"channel": "C1", "text": "x" * 5000, "blocks": own}, as_bot=True)
     assert json.loads(mock_webclient.api_call.call_args.kwargs["params"]["blocks"]) == own
 
-    slack_api("chat.postEphemeral", {"channel": "C1", "user": "U1", "text": "x" * 5000}, as_bot=True)
-    assert "blocks" not in mock_webclient.api_call.call_args.kwargs["params"]
+    # bot postEphemeral is never auto-split (core send since slice 2 — the shaping rule is asserted directly)
+    from atlas_slack import shaping as _shaping
+    assert "blocks" not in _shaping.shape_send("chat.postEphemeral", {"channel": "C1", "user": "U1", "text": "x" * 5000}, True, None)
 
 
 def test_raw_flag_returns_json_and_is_stripped(mock_webclient):
@@ -631,12 +546,14 @@ def test_raw_flag_on_error_still_structural(mock_webclient):
         slack_api("conversations.history", {"channel": "C1", "_raw": True})
 
 
-def test_upload_v2_block_attribution_refused_outside_the_core(mock_webclient):
-    """v2 core slice: attribution='block' would post its comment as a chat.postMessage
-    outside the core (no decision, no journal intent) → refused before the upload.
-    Replaces the three v1.3 block-mode tests (separate post, needs channel, comment failure)."""
-    with pytest.raises(ToolError, match="composite_not_in_slice"):
+def test_upload_v2_block_attribution_is_a_core_composite(mock_webclient):
+    """Slice 2: attribution='block' is a composite op (upload + child comment post) under one decision —
+    without a decision nothing is uploaded or posted (the composite itself: test_v2_slice2)."""
+    with pytest.raises(ToolError, match="no_decision"):
         slack_api("files.uploadV2", {"content": "x", "channel": "C1", "initial_comment": "c",
                                      "attribution": "block"})
+    with pytest.raises(ToolError, match="invalid_arguments"):
+        slack_api("files.uploadV2", {"content": "x", "channel": "C1", "initial_comment": "c",
+                                     "attribution": "footer"})
     mock_webclient.files_upload_v2.assert_not_called()
     mock_webclient.api_call.assert_not_called()

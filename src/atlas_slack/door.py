@@ -11,9 +11,15 @@ that needs a human is **refused** (`no_decision_adapter`) — never auto-allowed
     res.verdict.decision   # allow | needs-human | refuse
     res.data               # Slack response dict (None when refused)
 
-Executed methods in this slice: reads (row 0), `chat.postMessage` and
-`chat.scheduleMessage` through the core. Every other write refuses `not_in_slice` here — the transitional
-path exists only behind the interactive hook.
+Executed methods: reads (row 0) and the core methods (`policy.CORE_METHODS`:
+postMessage, scheduleMessage, update, postEphemeral, meMessage, files.uploadV2) through
+the core; `_rights`, `_comm_id`, `_reconcile` locally. Every other write refuses
+`not_in_slice` here — the transitional path exists only behind the interactive hook.
+
+A job should pass `provenance.comm_id` per communication: without it the door mints a fresh
+id per send and the duplicate rule cannot see a repeat. The one guard that remains is text-based:
+the same method and text to the same channel, thread and `post_at` while an `unknown` or `pending` row of it exists refuses `reconcile_required`
+(resolve it with `Door.call("_reconcile")`, never by retrying).
 """
 
 from __future__ import annotations
@@ -39,7 +45,11 @@ class DoorResult:
 
 
 class _SdkTransport:
-    """Default transport — slack_sdk WebClient under the profile's token env vars."""
+    """Default transport — slack_sdk WebClient under the profile's token env vars.
+
+    Built without the SDK's retry handlers: a write is one HTTP attempt (the default
+    ConnectionErrorRetryHandler would repeat a request Slack may already have accepted —
+    Codex review 2026-10-31); a library read that hits a connection error surfaces it."""
 
     def __init__(self, profile: Profile):
         self.profile = profile
@@ -54,8 +64,11 @@ class _SdkTransport:
             token = os.environ.get(var)
             if not token:
                 raise ValueError(f"{var} environment variable is required")
-            self._clients[var] = WebClient(token=token)
-        resp = self._clients[var].api_call(method, params=shaping.encode_nested(params))
+            self._clients[var] = WebClient(token=token, retry_handlers=[])
+        if method == shaping.UPLOAD_METHOD:
+            resp = self._clients[var].files_upload_v2(**params)
+        else:
+            resp = self._clients[var].api_call(method, params=shaping.encode_nested(params))
         return resp.data if hasattr(resp, "data") else dict(resp)
 
 
@@ -63,18 +76,29 @@ class Door:
     def __init__(self, profile_name: str | None = None, manifest: dict | None = None, transport=None,
                  profile: Profile | None = None):
         self.profile = profile or load_profile(profile_name)
+        # A Door built by name re-reads its profile before every call, so `freeze: true` written to the
+        # file stops a long-lived job's next write (Codex review 2026-10-31). An explicit Profile object
+        # is the caller's (tests, embedding) and is used as given.
+        self._profile_name = None if profile is not None else profile_name
+        self._reload = profile is None
         self.manifest = manifest
         self.transport = transport or _SdkTransport(self.profile)
+
+    def _refresh(self) -> None:
+        if self._reload:
+            self.profile = load_profile(self._profile_name)
 
     # ------------------------------------------------------------------ calls
     def verdict(self, method: str, params: dict | None = None, as_bot: bool = False,
                 provenance: dict | None = None) -> Verdict:
+        self._refresh()
         v, _ = core.evaluate_with_journal(method, params or {}, as_bot, provenance, self.profile,
                                           face="library", manifest=self.manifest, record_sighting=False)
         return v
 
     def call(self, method: str, params: dict | None = None, as_bot: bool = False,
              provenance: dict | None = None) -> DoorResult:
+        self._refresh()
         params = dict(params or {})
         eff = classify(method, params)
         if eff.route == "local":
@@ -91,6 +115,27 @@ class Door:
                 cid = mint_comm_id(lambda c: j.comm_first_seen(c) is not None or j.has_comm(c))
                 j.note_comm_seen(cid)
                 return DoorResult(v, data={"ok": True, "comm_id": cid}, comm_id=cid)
+            if method == "_reconcile":
+                if v.decision == REFUSE:
+                    return DoorResult(v)
+                from atlas_slack import reconcile as _rec
+                try:
+                    j = core.open_journal(self.profile.journal_dir)
+                except core.JournalUnavailable as e:
+                    v.decision, v.reason, v.message = REFUSE, "journal_unavailable", str(e)
+                    return DoorResult(v)
+                ids = params.get("op_ids")
+                if ids is not None and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
+                    v.decision, v.reason, v.message = REFUSE, "invalid_arguments", "`op_ids` must be a list of op id strings"
+                    return DoorResult(v)
+                if params.get("resolve") is not None:
+                    # a manual resolution is a human decision; the library has no one to ask
+                    v.decision, v.reason = REFUSE, "no_decision_adapter"
+                    v.message = "_reconcile with resolve is the person's word — not available to the library face"
+                    return DoorResult(v)
+                res = _rec.reconcile(j, self.transport, self.profile, op_ids=ids)
+                return DoorResult(v, data={"ok": True, "report": _rec.report(res, op_ids=ids),
+                                           "resolved": [r.__dict__ for r in res]})
             return DoorResult(v, data={"ok": True, "rights": self.rights()})
         if eff.route == "core":
             try:

@@ -120,7 +120,7 @@ A channel not listed gets the strictest row: `A: human, B-h: human, B-a: deny, C
 
 `recipients_deny_autonomous` applies to the autonomous speaking classes B-a and C1. A person who must never hear from the bot on its own can still receive a message the human approved in class A or B-h. `recipients_deny: {<class>: [ids]}` is a deterministic prohibition for that class. It refuses even when a valid human decision is attached (invariant iii: "human" always reads "human + policy"). The checked recipients are the channel id plus `provenance.target.users`.
 
-## Provenance (tool parameter `provenance`, `chat.postMessage`)
+## Provenance (tool parameter `provenance`, every core send: `chat.postMessage`, `chat.scheduleMessage`, `chat.update`, `chat.postEphemeral`, `chat.meMessage`, `files.uploadV2`)
 
 | Field | Type | Notes |
 |---|---|---|
@@ -137,19 +137,20 @@ A channel not listed gets the strictest row: `A: human, B-h: human, B-a: deny, C
 | `ttl_s` | seconds | measured from the **journal's first sighting** of `comm_id`, not from the caller |
 | `prepared_at` | epoch / ISO | caller's claim; > 60 s in the future → refuse; otherwise informational |
 | `scheduled_for` | epoch / ISO | bound into the decision |
+| `file_sha256` | list of 64-hex | `files.uploadV2`: sha256 of each uploaded file (`file`, then `file_uploads[*].file`), filled by the door and bound into the decision; a caller value that differs from the bytes on disk refuses `file_mismatch` (0.6.0) |
 | `resend` | bool | required to write a `comm_id` that already has a write |
 | `decision` | `{adapter, token, at}` | **set by the decision adapter**, never by the caller (the hook overwrites it) |
 
-**Migration rule (A12.2).** A `chat.postMessage` without provenance is treated as class A (`as_bot=False`) or B-h (`as_bot=True`). It still needs a human decision, and the prompt warns `provenance missing`. Autonomous classes have no migration path.
+**Migration rule (A12.2).** A core send without provenance is treated as class A (`as_bot=False`) or B-h (`as_bot=True`). It still needs a human decision, and the prompt warns `provenance missing`. Autonomous classes have no migration path.
 
-**Binding.** `op_hash = sha256(canonical JSON {method, as_bot, params, cls, context, scheduled_for})`. Every caller param is bound, so changing `reply_broadcast` after approval also invalidates the decision. Only `_raw`, a render flag, is excluded.
+**Binding.** `op_hash = sha256(canonical JSON {method, as_bot, params, cls, context, scheduled_for, file_sha256, target.users, comm_id, resend})`. Every caller param is bound, so changing `reply_broadcast` after approval also invalidates the decision; so does another `ts` on an edit, another `user` on an ephemeral, or a rewritten upload file. Only `_raw`, a render flag, is excluded. `chat.postEphemeral` adds `params.user` to `target.users` before hashing (the viewer is the recipient).
 
 ## Decisions
 
 The Claude Code hook is the decision adapter (`cc-hook`).
 
 - **Token path (default).** On `needs-human` the hook issues `token = <16 hex nonce>.<first 32 hex of HMAC-SHA256(secret, op_hash:nonce)>` (49 chars; the 128-bit MAC prefix is far beyond online guessing — each guess is a tool call and the row must also exist unconsumed). It records `decisions(token_hash, op_hash, adapter="cc-hook session=<id>", issued_at)` and answers `ask` with `updatedInput` carrying a **compact** provenance: the caller's own keys plus `decision: {t: <token>, p: <profile>}` — no echoed defaults. The server derives `op_id = sha256(op_hash:nonce)[:16]` (the prompt shows its first 8 chars) and takes `prepared_by` from the decision row. Claude Code documents that `updatedInput` combined with `ask` shows the modified input to the user and runs it on approval. The core recomputes the op hash and verifies the HMAC, then consumes the row atomically with the journal intent. A repeat refuses `decision_already_used`. A change refuses `decision_mismatch`. The token is valid for **30 minutes** from issue (0.5.1; 10 in 0.5.0 — 5 of 39 production approvals expired while the prompt sat in a background session). The clock starts when the prompt is offered, not when it is read; one-time use and the op-hash binding carry the safety.
-- **Fallback (`decision_fallback: true`).** For a Claude Code build that drops `updatedInput` on `ask`. The hook only records the row. The core needs an unconsumed row for the exact op hash, issued within 30 minutes.
+- **Fallback (`decision_fallback: true`).** For a Claude Code build that drops `updatedInput` on `ask`. The hook only records the row. The core needs an unconsumed row for the exact op hash, issued within 30 minutes. The row's `adapter` text is `cc-hook v=<plugin version> session=<id>` (0.6.0): the version check (`version_skew`) and `prepared_by` read it on this path, since there is no wire token to carry them.
 - The secret is `<journal_dir>/secret` (0600), generated once per profile. The trust posture is tamper-evident, not tamper-proof: the secret is readable by the same OS user.
 - **Library (`Door`)** has no adapter, so `needs-human` refuses `no_decision_adapter`. It is never auto-allowed.
 
@@ -157,9 +158,9 @@ The Claude Code hook is the decision adapter (`cc-hook`).
 
 SQLite in WAL mode, one file per host and profile, written only by the door. Several processes on a host serialise through SQLite locking.
 
-- `ops`: one row per write that passed the gate. The intent is written before the Slack call (`pending`), the outcome after (`ok` / `error` / `unknown`). It holds the full payload, provenance with the token stripped, policy version/digest and the decision record. Refusals leave **no** `ops` row; they appear in `calls` as `status=refused` with the reason code.
+- `ops`: one row per write that passed the gate. The intent is written before the Slack call (`pending`), the outcome after (`ok` / `error` / `unknown`). It holds the full payload, provenance with the token stripped, policy version/digest and the decision record. Refusals leave **no** `ops` row; they appear in `calls` as `status=refused` with the reason code. `slack_ts` is the write's Slack handle: message `ts`, `scheduled_message_id`, ephemeral `message_ts`, or the file id. A `chat.update` row carries `provenance.prior` (the message before the edit: `ts`, `user`, `bot_id`, `text`, or `error`). A composite upload (`attribution: block`) has a child row `<op>.c1` with `parent_op_id` and `provenance.composite: "comment"` — the same decision and `comm_id`, its own outcome.
 - `calls`: every Slack call and every refusal, with method, token kind, caller, status, error code and latency. Never content.
 - `decisions`: token hashes only. `state` holds the first sighting of each `comm_id`.
-- A `pending` row older than 10 minutes becomes `unknown` on the next open. `unknown` means "may or may not have been posted": resolve it by checking Slack, never by retrying. Reconciliation is not built yet.
+- A `pending` row older than 10 minutes becomes `unknown` on the next open. `unknown` means "may or may not have been posted": resolve it by checking Slack, never by retrying — `slack_api("_reconcile")` / `python3 -m atlas_slack.gate --reconcile` does that (0.6.0): bot sends are found by `{op_id}` in message metadata, person sends by text and author in the channel window, edits by the text at `ts`, scheduled sends in `chat.scheduledMessages.list`, uploads in `files.list`; an ephemeral is unobservable (`error reconciled_unobservable`). A `comm_id` with an `unknown` row refuses `reconcile_required` until then, `resend` or not.
 - Export: `Journal.export_envelope(since)` yields JSONL lines in the outbound envelope shape: `kind: outbound_message`, `payload`, `sent_by`, `comm_id`, `captured_at`, `op_id`, `outcome`, `ts`.
 - **Retention is yours.** The journal holds the verbatim text of everything sent. Delete rows or blank `payload_json` per your own policy; keep the row as the record that the send happened. Nothing reads the file unless you export it.

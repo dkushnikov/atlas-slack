@@ -267,10 +267,13 @@ def _h_single_message(method: str, c: dict, cursor: str) -> str:
     """§4.1 — chat.postMessage / update / scheduleMessage / postEphemeral."""
     msg = c.get("message")
     if not isinstance(msg, dict):
+        if method == "chat.postEphemeral" and c.get("message_ts"):
+            # §4.1b — Slack returns only the ephemeral's ts; the viewer and text are the caller's
+            return f"Ephemeral message (message_ts={c['message_ts']}) — visible to one user only, not in history"
         return _h_unknown(method, c, cursor)
 
-    ts = msg.get("ts", "")
-    text = msg.get("text", "") or ""
+    ts = msg.get("ts") or c.get("ts") or ""            # chat.update: ts sits at the top level
+    text = msg.get("text", "") or c.get("text") or ""
     thread_ts = msg.get("thread_ts")
     channel = c.get("channel", "")
 
