@@ -1,11 +1,13 @@
 {
   "name": "atlas-slack",
-  "version": "0.6.0",
-  "description": "Full Slack Web API access via MCP - generic gateway for all 200+ methods plus slack_download for file bytes. Structural errors, unread state, args echo, files.uploadV2 via the SDK, bot auto-split, _raw flag, Slack transcripts. v2 core: policy engine, provenance (comm_id minted by the door), 30-min one-time decisions bound to the exact operation, SQLite write-ahead journal, reconciliation of unknown outcomes, Door library, profiles; the six message sends (post, schedule, update, ephemeral, me, upload) through the core (contract v1.9).",
+  "version": "0.7.0",
+  "description": "Full Slack Web API access via MCP - generic gateway for all 200+ methods plus slack_download for file bytes. Structural errors, unread state, args echo, files.uploadV2 via the SDK, bot auto-split, _raw flag, Slack transcripts. v2 core: policy engine, provenance (comm_id minted by the door), 30-min one-time decisions bound to the exact operation, SQLite write-ahead journal, reconciliation of unknown outcomes, Door library, profiles; the six message sends (post, schedule, update, ephemeral, me, upload) through the core; identity check at connect, `init`/`doctor` (contract v1.10).",
   "author": {
     "name": "Dmitry Kushnikov"
   },
   "license": "MIT",
+  "homepage": "https://github.com/dkushnikov/atlas-slack",
+  "repository": "https://github.com/dkushnikov/atlas-slack",
   "keywords": [
     "slack",
     "api",

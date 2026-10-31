@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from atlas_slack import core, shaping
+from atlas_slack import core, identity, shaping
 from atlas_slack.policy import ALLOW, REFUSE, Verdict, classify, evaluate, load_policy
 from atlas_slack.profile import Profile, load_profile
 
@@ -82,6 +82,7 @@ class Door:
         self._profile_name = None if profile is not None else profile_name
         self._reload = profile is None
         self.manifest = manifest
+        self._own_transport = transport is None     # the identity check runs only under the default transport
         self.transport = transport or _SdkTransport(self.profile)
 
     def _refresh(self) -> None:
@@ -141,7 +142,8 @@ class Door:
             try:
                 res = core.execute_send(method, params, as_bot, provenance, profile=self.profile,
                                         transport=self.transport, face="library", manifest=self.manifest,
-                                        caller=(provenance or {}).get("prepared_by") or "door")
+                                        caller=(provenance or {}).get("prepared_by") or "door",
+                                        identity_check=self._own_transport)
             except core.Refused as e:
                 return DoorResult(e.verdict)
             except core.SendFailed as e:
@@ -155,6 +157,13 @@ class Door:
                 v.decision, v.reason = REFUSE, "no_decision_adapter"
             core.record_call(self.profile, method, "refused", as_bot=as_bot, caller="door", error_code=v.reason)
             return DoorResult(v)
+        if self._own_transport and eff.route == "transitional":
+            # a transitional-allowed write under the default transport: the same identity check as a core send
+            problems = identity.verify(self.profile, as_bot, self.transport)
+            if problems:
+                v.decision, v.reason, v.message = REFUSE, identity.code_for(problems), "; ".join(problems) + core.IDENTITY_HINTS[v.reason]
+                core.record_call(self.profile, method, "refused", as_bot=as_bot, caller="door", error_code=v.reason)
+                return DoorResult(v)
         try:
             data = self.transport(method, params, as_bot)
         except Exception as e:
@@ -173,32 +182,8 @@ class Door:
     def doctor(self, auth_test: dict, as_bot: bool) -> list[str]:
         """Compare an `auth.test` response (passed in, not fetched) with the profile.
 
-        Returns a list of mismatches; empty = consistent. A bot token from
-        another workspace, or a user token of another person, must never be
-        used under this profile (Strategy п. 17).
+        Returns mismatches and unset profile fields (advice); empty = consistent. The
+        same check runs automatically before the first write in a process
+        (`identity.verify`), where only a positive mismatch refuses.
         """
-        p = self.profile
-        problems = []
-        if not isinstance(auth_test, dict) or not auth_test.get("ok", True):
-            return [f"auth.test failed: {(auth_test or {}).get('error', 'no response')}"]
-        team = auth_test.get("team_id")
-        if p.workspace_id and team != p.workspace_id:
-            problems.append(f"workspace: token belongs to {team}, profile says {p.workspace_id}")
-        if not p.workspace_id:
-            problems.append("workspace_id is not set in the profile — cannot check the token's workspace")
-        uid = auth_test.get("user_id")
-        if as_bot:
-            if p.bot_user_id and uid != p.bot_user_id:
-                problems.append(f"bot: token's user_id {uid} ≠ profile bot_user_id {p.bot_user_id}")
-            if not auth_test.get("bot_id"):
-                problems.append("bot: auth.test has no bot_id — this is not a bot token")
-            if not p.bot_user_id:
-                problems.append("bot_user_id is not set — person-voice sends cannot be attributed")
-        else:
-            if p.person_user_id and uid != p.person_user_id:
-                problems.append(f"person: token's user_id {uid} ≠ profile person_user_id {p.person_user_id}")
-            if auth_test.get("bot_id"):
-                problems.append("person: auth.test reports a bot_id — a bot token sits in the user-token slot")
-            if not p.person_user_id:
-                problems.append("person_user_id is not set — cannot check whose user token this is")
-        return problems
+        return identity.problems(auth_test, self.profile, as_bot, advise=True)

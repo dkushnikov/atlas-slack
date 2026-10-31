@@ -555,9 +555,9 @@ class TestPermalink:
 class TestAuthTeam:
     def test_auth_test(self):
         resp = {"ok": True, "url": "https://x.slack.com/", "team": "Acme",
-                "user": "owner", "team_id": "T1", "user_id": "U1"}
+                "user": "ann", "team_id": "T1", "user_id": "U1"}
         result = format_response("auth.test", resp)
-        assert "owner@Acme" in result
+        assert "ann@Acme" in result
         assert "T1" in result
         assert "U1" in result
 

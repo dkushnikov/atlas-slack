@@ -34,10 +34,15 @@ def isolated_door_dirs(tmp_path, monkeypatch):
     monkeypatch.delenv("ATLAS_SLACK_PROFILE", raising=False)
     # Approval-prompt name resolution makes live reads — never in level-1 tests.
     monkeypatch.setenv("ATLAS_SLACK_RESOLVE_NAMES", "0")
-    from atlas_slack import journal
+    # The identity check at the first core write asks Slack `auth.test` — never in level 1; the
+    # identity tests unset this and answer auth.test themselves.
+    monkeypatch.setenv("ATLAS_SLACK_IDENTITY_CHECK", "0")
+    from atlas_slack import identity, journal
     journal.reset_cache()
+    identity.reset_cache()
     yield tmp_path
     journal.reset_cache()
+    identity.reset_cache()
 
 
 @pytest.fixture(autouse=True)

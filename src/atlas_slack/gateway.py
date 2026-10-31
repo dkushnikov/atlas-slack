@@ -9,6 +9,7 @@ from fastmcp.exceptions import ToolError
 from slack_sdk.errors import SlackApiError
 
 from atlas_slack import core, shaping
+from atlas_slack import identity
 from atlas_slack.client import get_client
 from atlas_slack.policy import REFUSE, classify, evaluate, load_policy
 from atlas_slack.profile import load_profile
@@ -72,9 +73,9 @@ UPLOAD_METHOD = shaping.UPLOAD_METHOD
 
 # Streaming trio (agent surface, Apr 2026 platform additions). Policy: bot-only.
 # A user-token stream would ship recipient-facing text with no reliable place to
-# attach the :blue_heart: @Atlas footer (chunks arrive incrementally; stopStream
+# attach the :blue_heart: @<bot> footer (chunks arrive incrementally; stopStream
 # finalization params vary) — so as_bot=False stream calls are refused pre-flight
-# instead of silently posting unattributed. Streams post as Atlas; attribution
+# instead of silently posting unattributed. Streams post as the bot; attribution
 # is never injected for bot-token sends anyway.
 STREAM_METHODS = frozenset({
     "chat.startStream",
@@ -156,10 +157,10 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         method: API method name (e.g. 'reactions.add', 'conversations.create',
                 'reminders.add', 'users.profile.set', 'pins.add')
         params: Method parameters as a dict. Refer to https://api.slack.com/methods/{method}
-        as_bot: If True, use bot token — writes appear as "Atlas"; no attribution, and
+        as_bot: If True, use bot token — writes appear as the bot; no attribution, and
                 plain `text` over 3000 chars on chat.postMessage/update/scheduleMessage
                 is auto-split into expanded sections (caller `blocks` win). If False (default),
-                use user token — recipient-facing text sends get :blue_heart: @Atlas attribution:
+                use user token — recipient-facing text sends get the :blue_heart: @<bot> attribution:
                 chat.postMessage / chat.update / chat.scheduleMessage / chat.postEphemeral
                 receive a Block Kit context block; files.uploadV2 / files.completeUploadExternal
                 initial_comment receives a text suffix. Other methods (reactions, pins, reads)
@@ -267,6 +268,13 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     t0 = time.monotonic()
     try:
         client = get_client(as_bot=as_bot)
+        if effect.route == "transitional":
+            # a transitional write runs under whatever token is there: same identity check as a core send
+            problems = identity.verify(profile, as_bot, _sdk_transport(client))
+            if problems:
+                code = identity.code_for(problems)
+                _observe(profile, method, as_bot, "refused", code, t0)
+                raise _slack_error(code, "; ".join(problems) + core.IDENTITY_HINTS[code])
         if method in DEFAULT_LIMIT_METHODS and "limit" not in call_params:
             call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
         if method in BLOCKS_METHODS:

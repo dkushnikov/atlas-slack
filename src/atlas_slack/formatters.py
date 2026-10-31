@@ -11,7 +11,7 @@ from typing import Callable
 # === Error hints (§10) ===
 ERROR_HINTS: dict[str, str] = {
     "channel_not_found": "DM channel IDs are per-viewer; try conversations.open from the correct token side.",
-    "not_in_channel": "Atlas isn't a member; invite via conversations.invite or post as user.",
+    "not_in_channel": "The bot isn't a member; invite it via conversations.invite or post in the person's voice.",
     "missing_scope": "Token lacks the scope; check auth.test for granted scopes.",
     "cannot_dm_bot": "Target is a bot account — DMs not supported.",
     "is_archived": "Channel is archived; unarchive first or pick another.",

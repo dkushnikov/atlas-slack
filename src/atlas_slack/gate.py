@@ -62,13 +62,13 @@ _T = {
            "below": "message below", "chars": "chars", "you": "You", "bot": "the bot", "scheduled": " · scheduled for {when}",
            "edit": " · edit of the message from {when}", "ephemeral": " · visible only to {user}", "me": " · /me",
            "was": "was: ", "was_unread": "was: ⚠ not read ({why})", "comment_below": "comment below",
-           "no_policy": "⚠ no context policy — the built-in strict policy applies"},
+           "no_policy": "⚠ no context policy — the built-in strict policy applies", "ledger_unread": "ledger: ⚠ not read"},
     "ru": {"bot_voice": "Голос бота, по твоему запросу.", "person_voice": "Твоим голосом, с пометкой 💙 {bot}.",
            "send": "Отправить?", "resend": "Повторная отправка.", "thread": " (в тред)",
            "broadcast": " + в канал", "below": "сообщение ниже", "chars": "симв.", "you": "Ты", "bot": "бот", "scheduled": " · отложено на {when}",
            "edit": " · правка сообщения от {when}", "ephemeral": " · видно только {user}", "me": " · /me",
            "was": "было: ", "was_unread": "было: ⚠ не прочитано ({why})", "comment_below": "комментарий ниже",
-           "no_policy": "⚠ политики контекста нет — действует встроенная строгая"},
+           "no_policy": "⚠ политики контекста нет — действует встроенная строгая", "ledger_unread": "ledger: ⚠ не прочитан"},
 }
 # Params the prompt already shows in words — not repeated in the technical line.
 _SHOWN_PARAMS = ("channel", "text", "blocks", "thread_ts", "_raw", "ts", "user", "post_at", "file", "content",
@@ -150,7 +150,7 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
         compared = "" if isinstance(params.get("blocks"), list) and params["blocks"] else (text if isinstance(text, str) else None)
         lines.extend(ledger.prompt_lines(profile, p.get("comm_id"), compared))
     except Exception:            # the ledger line is a courtesy; the prompt must always be issued
-        lines.append("ledger: ⚠ не прочитан")
+        lines.append(t["ledger_unread"])
     names.save()
     tech = [f"class {v.cls}", f"policy {v.policy_version}"]
     if p.get("comm_id"):
@@ -256,7 +256,10 @@ def hook_output(data: dict, profile=None, prior_reader=None) -> dict:
         tag = " (transitional)" if v.transitional else ""
         return _emit("deny", f"atlas-slack refused{tag} — {v.reason}: {v.message}")
     if v.route != "core":
-        return _emit("ask", v.message)
+        # the transitional reason carries no names and no language; a non-default profile language rides
+        # on a trailing `lang:` line so the card (hooks/approval.tsx) can follow the profile before any core card
+        lang = getattr(profile, "language", "en")
+        return _emit("ask", v.message + (f"\nlang: {lang}" if lang != "en" else ""))
 
     # needs-human on the core path → one-time decision bound to the op hash — but only
     # where Claude Code's `ask` reaches a human (permission_mode in the hook input).

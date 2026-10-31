@@ -31,7 +31,7 @@ from slack_sdk.errors import SlackApiError
 
 from atlas_slack import decision as decision_mod
 from atlas_slack import prior as prior_mod
-from atlas_slack import shaping
+from atlas_slack import identity, shaping
 from atlas_slack.journal import (
     DecisionRejected, DuplicateComm, DuplicateOp, JournalUnavailable, OpIntent, open_journal, token_hash,
 )
@@ -43,6 +43,14 @@ Transport = Callable[[str, dict, bool], dict]
 # Slack documents these as "the request may have partially completed" — an outcome the door cannot
 # call `error` (nothing posted): it is `unknown`, resolved by reconciliation (Codex review 2026-10-31).
 AMBIGUOUS_SLACK_ERRORS = frozenset({"internal_error", "fatal_error"})
+
+
+IDENTITY_HINTS = {
+    "identity_mismatch": " — nothing was sent; fix the profile or the token, then restart the session "
+                         "(`python3 -m atlas_slack doctor` shows both tokens against the profile)",
+    "identity_unverified": " — nothing was sent; the check runs again at the next call — call once more; "
+                           "if it persists, `python3 -m atlas_slack doctor`",
+}
 
 
 class Refused(Exception):
@@ -148,7 +156,7 @@ def evaluate_with_journal(method, params, as_bot, provenance, profile, *, face="
 
 def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | None, *, profile,
                  transport: Transport, face: str = "mcp", manifest: dict | None = None,
-                 caller: str | None = None) -> SendResult:
+                 caller: str | None = None, identity_check: bool = True) -> SendResult:
     params = dict(params or {})
     verdict, journal = evaluate_with_journal(method, params, as_bot, provenance, profile, face=face,
                                              manifest=manifest)
@@ -210,6 +218,15 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
         if not prov.prepared_by and adapter and "session=" in adapter:
             prov.prepared_by = "cc-session:" + adapter.split("session=", 1)[1]
             caller = caller if caller not in ("mcp", face) else prov.prepared_by
+
+    if identity_check:
+        # Identity at connect (0.7.0): after policy and the decision checks — a frozen profile or a bad
+        # token never reaches the network — and before the intent: one `auth.test` per process and token,
+        # the answer compared with the profile. A mismatch is a refusal: nothing sent, no ops row.
+        problems = identity.verify(profile, as_bot, transport)
+        if problems:
+            code = identity.code_for(problems)
+            raise refused(_refuse(verdict, code, "; ".join(problems) + IDENTITY_HINTS[code]))
 
     problem = shaping.caller_blocks_problem(params)
     if problem:
