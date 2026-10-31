@@ -170,3 +170,42 @@ SQLite in WAL mode, one file per host and profile, written only by the door. Sev
 ## Job manifest — `Door(profile, manifest={…})`
 
 A script or job passes a manifest with what it may touch; the policy engine checks every call against it (`manifest.get` in `policy.py`): `cls` — the one sender class the job speaks in (a provenance with another class refuses `class_not_in_manifest`); `allowed_methods` — the Web API methods it may call (`method_not_in_manifest`); `allowed_targets` — the channel ids it may write to (`target_not_in_manifest`); `read_scope` — `{channels: [...]}` it may read (`read_scope_violation`). A manifest never widens the policy: a class the policy sets to `deny` stays denied. Today the only autonomous class a policy can enable is `C2` (`modes: {C2: auto}` on the person's bot DM); `B-a` / `C1` need a notary stamp and no notary exists yet.
+
+### Example — a scheduled job that reports to the person
+
+A cron job on a headless host posts a finding to the person's bot DM in the bot's voice. Its profile (`decision_adapters: []` — nothing human-decided can leave this host) names a policy whose only entry is the DM:
+
+```yaml
+# ~/.config/atlas-slack/acme.policy.yaml
+version: "2026-10-31.1"
+ratified_by: "Pat Example"
+channels:
+  D0ACMEBOTDM:                       # the person's bot DM (person_bot_dm_id in the profile)
+    class: dm
+    voices: [bot]
+    modes: {C2: auto}
+```
+
+```python
+from atlas_slack.door import Door
+
+channel = "D0ACMEBOTDM"
+door = Door("acme", manifest={"cls": "C2", "allowed_methods": ["chat.postMessage"],
+                              "allowed_targets": [channel]})
+door.call("_reconcile")                      # settle unknown outcomes of earlier runs first; reads only
+res = door.call("chat.postMessage", {"channel": channel, "text": text}, as_bot=True, provenance={
+    "cls": "C2", "comm_id": f"nightly-{day}-{digest}",   # one id per communication: the same report twice
+    "prepared_by": "job:nightly-check@acme-node",         # in a day is one comm, a repeat refuses duplicate_comm_id
+    "target": {"channel": channel},
+    "sources": ["the job's own reads"],
+})
+if res.verdict.decision != "allow":
+    if res.verdict.reason == "duplicate_comm_id":
+        pass                                 # an earlier run delivered it — record the finding as sent
+    else:
+        raise SystemExit(f"refused {res.verdict.reason}: {res.verdict.message}")   # exit non-zero, retry next run
+elif res.error:
+    raise SystemExit(f"send failed: {res.error}")   # error or unknown; the next run's _reconcile settles an unknown
+```
+
+Only the bot token is in the job's environment (invariant i: a job never holds the person's token). The same text to any other channel is class C1 under the door's own rule and refuses `no_notary`; a `comm_id` with an `unknown` row refuses `reconcile_required` until `_reconcile` resolves it, which is why the job calls it before every send. A failed send (`error`) does not block a retry: only `ok`, `pending` and `unknown` rows do.
