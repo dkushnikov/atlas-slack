@@ -1,6 +1,6 @@
-# atlas-slack
+# Atlas Slack
 
-Slack for one person and their Claude Code agent — with a decision per operation.
+Slack for one person and their AI partner — with a decision per operation. A Claude Code plugin; the Slack door of an [Atlas](https://github.com/dkushnikov/atlas-seed)-style partner (Atlas Seed is the identity layer; this is where that partner speaks and listens in Slack).
 
 ## What it is
 
@@ -20,7 +20,7 @@ You need Python 3.12+, Claude Code, and the right to create a Slack app in your 
 
 ### 1. Create your Slack app
 
-Go to https://api.slack.com/apps → **Create New App** → **From a manifest**, paste [`slack-app-manifest.json`](slack-app-manifest.json), rename the app and its bot user, and install it to the workspace. Copy both tokens: **User OAuth Token** (`xoxp-…`, your voice and your reads) and **Bot User OAuth Token** (`xoxb-…`, the bot's voice).
+Go to https://api.slack.com/apps → **Create New App** → **From a manifest**, paste [`slack-app-manifest.json`](slack-app-manifest.json) (the app and its bot user are named **Atlas** — rename them if your partner has another name), and install it to the workspace. Copy both tokens: **User OAuth Token** (`xoxp-…`, your voice and your reads) and **Bot User OAuth Token** (`xoxb-…`, the bot's voice).
 
 The manifest holds the scopes the door's reads and six core sends use — and deliberately no `chat:write.customize`, no incoming webhook, no commands, no events. A method outside the granted scopes fails with `missing_scope`, which names the scope to add.
 

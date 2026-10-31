@@ -1,4 +1,4 @@
-# atlas-slack — Claude Code plugin
+# Atlas Slack — Claude Code plugin
 
 Slack for one person and their agent, with a decision per operation: one gateway tool for the Slack Web API, two voices (yours with a mark, the bot's), a policy engine, a write-ahead journal and reconciliation. The user-facing description is in `README.md`; this file is for working on the code.
 
