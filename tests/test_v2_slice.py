@@ -697,7 +697,7 @@ def test_v7_hook_and_server_on_different_profiles(env, monkeypatch):
 def test_v8_unconsumed_decisions_are_pruned(env):
     j = env.journal
     j.store_decision("old.1", "h-old", "cc-hook")
-    j._conn.execute("UPDATE decisions SET issued_at = issued_at - 7200")
+    j._conn.execute("UPDATE decisions SET issued_at = issued_at - 90000")   # a day + (prune horizon 24 h since 0.5.1)
     j.store_decision("new.1", "h-new", "cc-hook")
     assert j.get_decision("old.1") is None and j.get_decision("new.1") is not None
 

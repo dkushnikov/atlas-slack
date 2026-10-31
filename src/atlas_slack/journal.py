@@ -34,7 +34,11 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 DEFAULT_STALE_AFTER_S = 600
-DECISION_PRUNE_AFTER_S = 3600
+# Unconsumed decisions are kept a full day: an approval that arrives after the 30-min window
+# must still read `decision_expired` (with its instruction), not `decision_unknown` — with a
+# 1 h prune the 3 h 47 min case of 2026-10-30 fell through to "token not recorded" whenever
+# any other prompt had been issued meanwhile (spec-verifier, 2026-10-31).
+DECISION_PRUNE_AFTER_S = 86400
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -189,6 +193,16 @@ class Journal:
             except OSError:
                 pass
             self.stale_marked = self.mark_stale_unknown()
+            # Long-lived MCP processes keep the WAL from being checkpointed (4 MB WAL over a
+            # 200 KB db after 3 days of 0.5.0). PASSIVE never waits for readers (TRUNCATE would
+            # block up to the 10 s busy timeout on every hook open — verifier, 2026-10-31); it
+            # moves pages and stops the growth but does not shrink the file; the size limit
+            # truncates the WAL at its next reset, once no reader pins it.
+            try:
+                self._conn.execute("PRAGMA journal_size_limit=1048576")
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                pass
         except JournalUnavailable:
             raise
         except (sqlite3.Error, OSError) as e:
@@ -266,8 +280,9 @@ class Journal:
                     raise DecisionRejected("decision_mismatch",
                                            "the decision was issued for a different operation")
                 if decision_max_age_s is not None and now - row["issued_at"] > decision_max_age_s:
+                    from atlas_slack.decision import expired_detail
                     raise DecisionRejected("decision_expired",
-                                           f"decision older than {int(decision_max_age_s)}s")
+                                           expired_detail(now - row["issued_at"], decision_max_age_s))
                 cur = c.execute("UPDATE decisions SET consumed_at=? WHERE token_hash=? AND consumed_at IS NULL",
                                 (now, row["token_hash"]))
                 if cur.rowcount != 1:
@@ -340,6 +355,10 @@ class Journal:
                    (key, json.dumps(ts), time.time()))
         return self.comm_first_seen(comm_id)
 
+    def has_comm(self, comm_id: str) -> bool:
+        row = self._exec("SELECT 1 FROM ops WHERE comm_id=? LIMIT 1", (comm_id,)).fetchone()
+        return row is not None
+
     def comm_first_seen(self, comm_id: str) -> float | None:
         row = self._exec("SELECT value_json FROM state WHERE key=?", (f"comm_first_seen:{comm_id}",)).fetchone()
         return json.loads(row[0]) if row else None
@@ -351,7 +370,7 @@ class Journal:
                    (token_hash(token), op_hash, adapter, time.time()))
 
     def prune_decisions(self, older_than_s: float = DECISION_PRUNE_AFTER_S) -> int:
-        """Drop never-used decisions (a human declined, or the call never came) after an hour.
+        """Drop never-used decisions (a human declined, or the call never came) after a day.
 
         Consumed rows stay — they are the record of who approved what. Unconsumed
         rows older than the decision TTL can never be used anyway; pruning keeps

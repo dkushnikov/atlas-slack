@@ -38,10 +38,11 @@ wheels = [
 
 [[package]]
 name = "atlas-slack"
-version = "0.1.0"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "pyyaml" },
     { name = "slack-sdk" },
 ]
 
@@ -54,6 +55,7 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "slack-sdk", specifier = ">=3.0.0" },
 ]
 provides-extras = ["dev"]

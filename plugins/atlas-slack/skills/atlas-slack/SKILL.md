@@ -7,7 +7,7 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 Primary Slack integration for agent sessions. Coexists with the official Slack plugin/MCP (decision 2026-08-21: no migration; the official one covers canvas and semantic search, this one covers the full Web API, two voices, attribution and the write gate).
 
-Two tools, that's the whole surface (since v1.2; output contract v1.4 on branch `feat/v2-core`, plugin 0.4.0):
+Two tools, that's the whole surface (since v1.2; output contract v1.5, plugin 0.5.1):
 
 - **`slack_api(method, params, as_bot=?)`** — every Slack Web API method (200+).
 - **`slack_download(file_id, out_dir?, as_bot?)`** — file bytes to local disk (the JSON API never serves file content).
@@ -122,14 +122,22 @@ DM IDs are per-viewer: a bot upload into a DM needs the bot-side DM ID (`convers
 
 Reads → user token. Writes → `as_bot` flag picks bot or user. All writes gated by the plugin's internal PreToolUse hook (`hooks/mcp-slack-gate.py`) — a thin adapter over the door's policy engine. `conversations.open` is a **write** (it creates the DM/MPIM); to look up an existing DM use `users.conversations`, or `conversations.open` with `"prevent_creation": true` and exactly one user (row 0, auto-allowed; returns "not found" instead of creating).
 
-## Sending a message — v2 core (contract v1.4)
+## Sending a message — v2 core (contract v1.5)
 
 `chat.postMessage` goes through the door's core: policy → provenance → your human's decision → journal (written **before** the send) → Slack. Every other write still runs on the labelled *transitional* path (today's ask).
 
-- Pass `provenance` when you know it: `{"cls": "B-h", "comm_id": "...", "checks": {"recipient": "...", "voice": "..."}, "sources": ["..."]}` — `cls` `B-h` = bot voice (`as_bot=True`), `A` = the person's voice (`as_bot=False`). Without provenance the send still asks, with a "provenance missing" warning (migration rule).
+- **Provenance — pass at least `comm_id`:** `"provenance": {"comm_id": "<ledger comm_id>"}`. That is the whole minimal form; `cls` is derived from the voice (`as_bot=False` → `A`, `as_bot=True` → `B-h`). **Where the id comes from:** `slack_api("_comm_id")` — no Slack call, returns a journal-unique `YYYYMMDD-xxxx` and notes the comm's first sighting (a `ttl_s` counts from here); put it in the ledger file's `comm_id:` when you create the draft. A live send with no id at all may omit `provenance`: the door mints one and the result line hands it back (`journal: op … ok · comm 20261031-9f3a (minted by the door — record it in the ledger)`). Never invent "random hex" yourself: a model's random is not random (the ledger had `7c3e` eight times).
+- **Full schema** (every field optional except as noted; a wrong *type* refuses `provenance_invalid` before any Slack call — the message names the field):
+  - `cls` `A` | `B-h` (| `B-a` `C1` `C2`, refused by the strict policy) · `voice` `person` | `bot` (derived from `as_bot`)
+  - `comm_id` string · `op_id` string ≤128 (normally omitted; the door derives it) · `prepared_by` string · `context` string
+  - `target` **object** `{"channel": "C…", "users": ["U…"], "is_mpim": false}` — not a string; `channel` must equal `params.channel`
+  - `checks` **object** `{"voice": "…", "recipient": "…", "policy_row": "…", "mark": "…", "disclosure": "…"}` — free values, shown in the prompt, never judged; not a string
+  - `sources` **list** of strings · `origin` `live` (default) | `prepared-as-human` (then `ttl_s` > 0 **and** `comm_id` are required, and only the person's voice, `as_bot=False`: `ttl_required` / `comm_id_required` / `prepared_as_human_bot_voice` otherwise) · `prepared_at` / `scheduled_for` epoch or ISO-8601 · `resend` true/false
+  - `decision` — set by the hook, never by you.
 - The approval prompt shows class, voice, recipient, policy row, declared checks and the text. The approval covers **that exact operation**: change text, channel, thread, any param or the voice and the door refuses `decision_mismatch` — ask again instead of editing after approval.
 - One approval = one send. A repeat refuses `decision_already_used`; the same `comm_id` again refuses `duplicate_comm_id` unless you pass `"resend": true` and get a fresh approval.
-- A result line `journal: op <id> ok` names the journal row. `Error: outcome_unknown` means the post may or may not exist — check the channel history before anything else; **never retry blindly**.
+- **The approval window is 30 minutes** from the moment the prompt is issued. `Error: decision_expired` means the human answered later than that and **nothing was sent**: call the tool again with the same input — a fresh prompt is issued; no new `op_id`, no `resend`. Do not check the channel first: an expired decision never reaches Slack. The same applies to `decision_unknown` after a prompt sat for more than a day (the row is pruned) — nothing was sent, call again. The one exception is a prepared-as-human comm whose own `ttl_s` ran out meanwhile: that refuses `ttl_expired`, and the comm needs a fresh human look, not a retry.
+- A result line `journal: op <id> ok · comm <comm_id>` names the journal row and the communication it belongs to. `Error: outcome_unknown` means the post may or may not exist — check the channel history before anything else; **never retry blindly**.
 - Refusals before any Slack call: `frozen` (profile freeze), `policy_invalid`, `journal_unavailable`, `identity_override` (`username`/`icon_emoji`/`icon_url` are never allowed), `not_enabled_by_policy` (autonomous classes B-a/C1/C2 are off by default), `recipient_denied`, `ttl_expired`, `attribution_unavailable` (profile lacks `bot_user_id`).
 - `slack_api("_rights")` prints what this host may do right now — capabilities × class × policy. Use it when a refusal surprises you.
 
@@ -165,7 +173,7 @@ When composing Slack messages, use mrkdwn (NOT standard Markdown):
 
 No headers (`##`), no horizontal rules (`---`), no `[text](url)` links.
 
-## Reading the output (contract v1.4)
+## Reading the output (contract v1.5)
 
 - **Errors are structural**: a failed Slack call comes back as an MCP tool error (`is_error=true`) with text `Error: <code> — <hint>`. Success text never starts with `Error:`.
 - **List responses lead with an args echo**: `» conversations.members channel=C123` — use it to match parallel responses to their calls.

@@ -317,3 +317,22 @@ The policy engine refuses `username` / `icon_emoji` / `icon_url` on **every** wr
 - The hook is a thin adapter over `atlas_slack.gate`.
 - **Partial, deliberately:** names outside the registry still pass through the legacy prefix/suffix heuristic, but only on the *transitional* path, and the verdict says so (`auth.futureMutation` is still allowed, flagged `transitional_read`). An unregistered write asks with "transitional" in the prompt, as in 0.4.0. Making unregistered writes refuse is the cutover step after the matrix covers the remaining rows (Strategy п. 15).
 
+## DEC-001 — Approval window of 10 minutes expired in production use
+
+**Severity:** Medium · **Status:** Resolved · **Reported:** 2026-10-31 (journal review of 0.5.0, days 1–3) · **Fixed:** 2026-10-31 (0.5.1)
+
+### Symptom
+5 of 39 core sends refused `decision_expired`; consumed approvals waited up to 588 s. The window counted from the hook issuing the prompt, and the prompt sat in a background session until the owner reached it (one case 3 h 47 min, one 14 min 43 s). The MC-vault memory then recorded a wrong mechanism («a resend reuses the stale decision; pass a new op_id») — the transcript shows a fresh token was issued each time; the second failure was simply a second long wait.
+
+### Resolution (0.5.1)
+`DECISION_MAX_AGE_S` 600 → 1800; unconsumed rows pruned after 24 h instead of 1 h (a late approval must read `decision_expired`, not `decision_unknown` — spec-verifier finding). The refusal texts state the age, the window, that nothing was sent, and that the same call again yields a fresh prompt. Tests: `tests/test_door_contract_051.py`.
+
+## GATE-004 — Provenance schema enforced by the parser, absent from the skill
+
+**Severity:** Medium · **Status:** Resolved · **Reported:** 2026-10-31 · **Fixed:** 2026-10-31 (0.5.1)
+
+### Symptom
+`target` / `checks` must be objects, `origin` ∈ {live, prepared-as-human}, `ttl_s` with the latter — none of it in SKILL.md, which showed only `checks: {recipient, voice}`. Four sessions on 2026-10-30 hit two `provenance_invalid` refusals each, then sent without provenance: 10 of 34 ops carried no `comm_id`, and the ledger ↔ journal link was lost for them. The refusals were invisible: the hook denies before the server, and only the server journaled.
+
+### Resolution (0.5.1)
+The skill carries the minimal form (`{"comm_id": …}`; `cls` now derived from `as_bot`) and the full schema. The door mints `comm_id` when absent (`YYYYMMDD-<4 hex>` from OS entropy; an LLM's «4 random hex» gave 131 distinct suffixes in 160 ledger ids, `7c3e` ×8) and returns it in the result line; `slack_api("_comm_id")` mints one ahead of the draft (the comms skill in `<atlas>` now says so). Hook-side refusals land in `calls` with `caller=hook`.

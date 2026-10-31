@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import secrets
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -109,6 +111,10 @@ class Provenance:
         if unknown:
             raise ProvenanceError(f"unknown provenance fields: {sorted(unknown)}")
         c = d.get("cls")
+        if c is None and as_bot is not None:
+            # A send under the person's token is class A, under the bot token B-h (A12.2):
+            # the voice already says it, so `{"comm_id": …}` alone is a valid provenance.
+            c = "B-h" if as_bot else "A"
         if c not in CLASSES:
             raise ProvenanceError(f"cls must be one of {list(CLASSES)}, got {c!r}")
         voice = d.get("voice")
@@ -178,6 +184,25 @@ def synthesize(params: dict, as_bot: bool, context: str | None, prepared_by: str
         target={"channel": params.get("channel")} if isinstance(params.get("channel"), str) else {},
         origin="live", migration="provenance_missing",
     )
+
+
+COMM_ID_RE = re.compile(r"^\d{8}-[0-9a-f]{4}$")
+
+
+def mint_comm_id(taken=None, now: float | None = None) -> str:
+    """`YYYYMMDD-<4 hex>` from the OS entropy source — the ledger convention, minted by the door.
+
+    An LLM asked for "4 random hex" is not a random source: across 160 ledger ids on 2026-10-31
+    only 131 suffixes were distinct (`7c3e` ×8). `taken(id) -> bool` lets the caller reject an
+    id the journal has already seen.
+    """
+    import time as _t
+    day = _t.strftime("%Y%m%d", _t.localtime(_t.time() if now is None else now))
+    for _ in range(64):
+        cid = f"{day}-{secrets.token_hex(2)}"
+        if taken is None or not taken(cid):
+            return cid
+    raise RuntimeError("could not mint a free comm_id in 64 draws")
 
 
 def ensure_op_id(p: Provenance) -> Provenance:

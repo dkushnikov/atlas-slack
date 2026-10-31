@@ -17,7 +17,7 @@ import json
 import sys
 
 from atlas_slack import decision as decision_mod
-from atlas_slack.core import evaluate_with_journal
+from atlas_slack.core import evaluate_with_journal, record_call
 from atlas_slack.journal import JournalUnavailable, open_journal
 from atlas_slack.policy import ALLOW, NEEDS_HUMAN, REFUSE, Verdict, load_policy, rights_table
 from atlas_slack.profile import load_profile
@@ -116,6 +116,17 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
     return "\n".join(lines)
 
 
+def _journal_refusal(profile, journal, method: str, as_bot: bool, code: str) -> None:
+    """Call-journal row for a hook-side deny (caller=hook, never content). Best effort."""
+    if journal is None:
+        return
+    try:
+        record_call(profile, method, "refused", as_bot=as_bot, caller="hook", error_code=code,
+                    journal=journal)
+    except Exception:
+        pass
+
+
 def _emit(decision: str, reason: str = "", updated_input: dict | None = None) -> dict:
     out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision}}
     if reason:
@@ -146,6 +157,9 @@ def hook_output(data: dict, profile=None) -> dict:
     if v.decision == ALLOW:
         return _emit("allow", f"atlas-slack: {v.message}")
     if v.decision == REFUSE:
+        # A refusal here never reaches the server, so the hook is the only place that can
+        # journal it (3 days of 0.5.0: eight provenance_invalid refusals, none in the journal).
+        _journal_refusal(profile, journal, method, as_bot, v.reason)
         tag = " (transitional)" if v.transitional else ""
         return _emit("deny", f"atlas-slack refused{tag} — {v.reason}: {v.message}")
     if v.route != "core":
@@ -155,6 +169,7 @@ def hook_output(data: dict, profile=None) -> dict:
     # where Claude Code's `ask` reaches a human (permission_mode in the hook input).
     mode = data.get("permission_mode")
     if mode is not None and mode not in profile.decision_permission_modes:
+        _journal_refusal(profile, journal, method, as_bot, "permission_mode_unsafe")
         return _emit("deny", f"atlas-slack refused — permission_mode_unsafe: permission mode {mode!r} cannot "
                              "guarantee that a human sees this prompt; switch to default (or auto) mode, or list "
                              "the mode in the profile's decision_permission_modes")
@@ -165,6 +180,7 @@ def hook_output(data: dict, profile=None) -> dict:
         journal.store_decision(token, v.op_hash,
                                decision_mod.ADAPTER_CC_HOOK + (f" session={sid}" if sid else ""))
     except (OSError, JournalUnavailable, AttributeError) as e:
+        _journal_refusal(profile, journal, method, as_bot, "journal_unavailable")
         return _emit("deny", f"atlas-slack refused — journal_unavailable: cannot record the decision ({e})")
     caller_prov = prov_in if isinstance(prov_in, dict) else {}
     op_short = (caller_prov.get("op_id") or decision_mod.derive_op_id(v.op_hash, token))[:8]

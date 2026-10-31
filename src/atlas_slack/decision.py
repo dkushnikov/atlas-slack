@@ -35,7 +35,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-DECISION_MAX_AGE_S = 600
+# Window between the hook issuing the prompt and the human answering it. The clock starts
+# when the prompt is *offered*, not when it is read: in 3 days of 0.5.0 the longest approvals
+# waited 588 s (consumed) and 5 of 39 sends expired at 600 s while the prompt sat in a
+# background session. One-time use + op-hash binding carry the safety; the window only
+# bounds how long an unanswered prompt stays valid.
+DECISION_MAX_AGE_S = 1800
 ADAPTER_CC_HOOK = "cc-hook"
 # Token = 16 hex nonce (64 bit) "." 32 hex HMAC-SHA256 prefix (128 bit) = 49 chars.
 # 128 bits of MAC is far beyond online guessing (each guess is one tool call, and the
@@ -97,6 +102,13 @@ def token_matches(secret: bytes, token: str, op_hash: str) -> bool:
     return hmac.compare_digest(mac, _mac(secret, op_hash, nonce))
 
 
+def expired_detail(age_s: float, window_s: float) -> str:
+    """What Claude reads after an approval arrived too late. Nothing was sent; the fix is a new prompt."""
+    return (f"the approval came {int(age_s)}s after the prompt was issued (window {int(window_s)}s) — "
+            "nothing was sent; call again with the same input to get a fresh prompt (no new op_id needed; "
+            "a prepared-as-human comm whose own ttl_s has run out refuses ttl_expired instead)")
+
+
 @dataclass
 class DecisionCheck:
     ok: bool
@@ -130,9 +142,13 @@ def check(decision: dict | None, op_hash: str, journal, journal_dir, fallback_en
                              "scheduled_for) — the decision does not cover what arrived")
     row = journal.get_decision(token)
     if row is None:
-        return DecisionCheck(False, "decision_unknown", "token not recorded in this door's journal")
+        return DecisionCheck(False, "decision_unknown",
+                             "token not recorded in this door's journal — either issued under another "
+                             "profile/journal, or the prompt sat unanswered for more than a day; nothing "
+                             "was sent; call again with the same input to get a fresh prompt")
     if row["consumed_at"] is not None:
         return DecisionCheck(False, "decision_already_used", "this decision was already used for a send")
     if now - row["issued_at"] > DECISION_MAX_AGE_S:
-        return DecisionCheck(False, "decision_expired", f"decision older than {DECISION_MAX_AGE_S}s")
+        return DecisionCheck(False, "decision_expired",
+                             expired_detail(now - row["issued_at"], DECISION_MAX_AGE_S))
     return DecisionCheck(True, "valid", token=token, adapter=row.get("adapter"))

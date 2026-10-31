@@ -31,6 +31,7 @@ class DoorResult:
     data: dict | None = None
     op_id: str | None = None
     error: str | None = None       # Slack error / unknown outcome after the call was made
+    comm_id: str | None = None     # the caller's, or minted by the door
 
     @property
     def ok(self) -> bool:
@@ -78,6 +79,18 @@ class Door:
         eff = classify(method, params)
         if eff.route == "local":
             v = evaluate(method, params, as_bot, provenance, self.profile, load_policy(self.profile), face="library")
+            if method == "_comm_id":
+                if v.decision == REFUSE:
+                    return DoorResult(v)
+                from atlas_slack.provenance import mint_comm_id
+                try:
+                    j = core.open_journal(self.profile.journal_dir)
+                except core.JournalUnavailable as e:
+                    v.decision, v.reason, v.message = REFUSE, "journal_unavailable", str(e)
+                    return DoorResult(v)
+                cid = mint_comm_id(lambda c: j.comm_first_seen(c) is not None or j.has_comm(c))
+                j.note_comm_seen(cid)
+                return DoorResult(v, data={"ok": True, "comm_id": cid}, comm_id=cid)
             return DoorResult(v, data={"ok": True, "rights": self.rights()})
         if eff.route == "core":
             try:
@@ -88,7 +101,7 @@ class Door:
                 return DoorResult(e.verdict)
             except core.SendFailed as e:
                 return DoorResult(e.verdict, op_id=e.op_id, error=f"{e.code} ({e.outcome})")
-            return DoorResult(res.verdict, data=res.data, op_id=res.op_id)
+            return DoorResult(res.verdict, data=res.data, op_id=res.op_id, comm_id=res.comm_id)
 
         v = evaluate(method, params, as_bot, provenance, self.profile, load_policy(self.profile),
                      face="library", manifest=self.manifest)

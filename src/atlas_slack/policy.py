@@ -39,6 +39,7 @@ READ_METHODS = frozenset({
     "bots.info",
     "blocks.validate",
     "bookmarks.list",
+    "canvases.getContent",
     "chat.getPermalink", "chat.scheduledMessages.list",
     "conversations.history", "conversations.replies", "conversations.info",
     "conversations.list", "conversations.members",
@@ -57,7 +58,7 @@ READ_METHODS = frozenset({
 })
 
 CORE_METHODS = frozenset({"chat.postMessage"})
-LOCAL_METHODS = frozenset({"_rights"})
+LOCAL_METHODS = frozenset({"_rights", "_comm_id"})
 
 # Writes the 0.4.0 gate auto-allows by conscious classification (issue #1):
 # stream continuation after an asked-for chat.startStream; agent-session chrome.
@@ -460,6 +461,14 @@ def evaluate(method: str, params: dict | None, as_bot: bool, provenance: dict | 
         ctx.warnings.append("; ".join(profile.errors))
 
     if eff.route == "local":
+        if method == "_comm_id":
+            # Minting writes a state row (the comm's first sighting): a frozen or broken profile
+            # refuses it like any other write (verifier, 2026-10-31). `_rights` stays read-only.
+            if profile.broken:
+                return _base(ctx, REFUSE, _profile_error_code(profile),
+                             f"profile {profile.name!r} is unusable: {'; '.join(profile.errors)}")
+            if profile.freeze:
+                return _base(ctx, REFUSE, "frozen", f"profile {profile.name!r} has freeze: true — no comm_id is minted")
         return _base(ctx, ALLOW, "local", f"{method}: local pseudo-method, no Slack call")
     bad_name = noncanonical(method)
     if bad_name:
@@ -567,6 +576,9 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
                        "prepared-as-human leaves only in the person's voice, on a fresh human decision (A5.1)")
         if prov.ttl_s is None:
             ctx.refuse("ttl_required", "prepared-as-human needs ttl_s (A7 #5)")
+        if not prov.comm_id:
+            ctx.refuse("comm_id_required", "prepared-as-human needs comm_id — ttl_s counts from the journal's "
+                                           "first sighting of the comm (A5.2); get one from slack_api('_comm_id')")
 
     if not profile.has_token(ctx.as_bot):
         ctx.refuse("token_unavailable", f"{profile.token_var(ctx.as_bot)} is not set — no "

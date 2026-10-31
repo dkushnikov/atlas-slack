@@ -28,7 +28,7 @@ from atlas_slack.journal import (
     DecisionRejected, DuplicateComm, DuplicateOp, JournalUnavailable, OpIntent, open_journal, token_hash,
 )
 from atlas_slack.policy import NEEDS_HUMAN, REFUSE, Verdict, evaluate, load_policy
-from atlas_slack.provenance import Provenance, ensure_op_id
+from atlas_slack.provenance import Provenance, ensure_op_id, mint_comm_id
 
 Transport = Callable[[str, dict, bool], dict]
 
@@ -62,6 +62,8 @@ class SendResult:
     op_id: str
     final_params: dict
     journal_error: str | None = None   # set when Slack accepted the send but the outcome row failed
+    comm_id: str | None = None
+    comm_minted: bool = False          # the door minted comm_id because the caller passed none
 
 
 def _journal(profile):
@@ -161,7 +163,18 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
                         "at": (prov.decision or {}).get("at"),
                         "path": "fallback" if dc.fallback else "token",
                         "token_hash": token_hash(dc.token) if dc.token else None}
+    comm_minted = False
+    if not prov.comm_id:
+        # Outside the decision binding (the hash had no comm_id on either side), inside the
+        # journal: every op row carries a comm_id, and the result line hands it to the ledger.
+        def _taken(cid: str) -> bool:
+            return journal.comm_first_seen(cid) is not None or journal.has_comm(cid)
+        prov.comm_id = mint_comm_id(_taken)
+        comm_minted = True
+        _quiet(journal.note_comm_seen, prov.comm_id)
     stored_prov = prov.to_dict()
+    if comm_minted:
+        stored_prov["comm_id_source"] = "door"
     if stored_prov.get("decision"):
         stored_prov["decision"] = {k: v for k, v in stored_prov["decision"].items() if k not in ("token", "t")}
     intent = OpIntent(
@@ -233,7 +246,8 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
         journal.record_outcome(prov.op_id, "ok", slack_ts=data.get("ts"))
     except JournalUnavailable as e:
         return SendResult(verdict=verdict, data=data, op_id=prov.op_id, final_params=final,
-                          journal_error=str(e))
+                          journal_error=str(e), comm_id=prov.comm_id, comm_minted=comm_minted)
     record_call(profile, method, "ok", as_bot=as_bot, caller=caller, latency_ms=latency, op_id=prov.op_id,
                 journal=journal)
-    return SendResult(verdict=verdict, data=data, op_id=prov.op_id, final_params=final)
+    return SendResult(verdict=verdict, data=data, op_id=prov.op_id, final_params=final,
+                      comm_id=prov.comm_id, comm_minted=comm_minted)

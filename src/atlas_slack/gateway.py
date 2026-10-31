@@ -246,7 +246,10 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     approval prompt shows the provenance; the decision is bound to the exact
     operation (any change after approval → `decision_mismatch`). Every send is
     journalled before it leaves (write-ahead). `slack_api("_rights")` shows what
-    this host may do right now (profile × policy × class).
+    this host may do right now (profile × policy × class). `slack_api("_comm_id")`
+    mints a journal-unique ledger comm_id (no Slack call) — pass it as provenance.comm_id;
+    without one the door mints it and returns it in the result line. An approval is valid
+    30 min; `decision_expired` = nothing sent, call again with the same input.
 
     Raw response — put `"_raw": true` inside params to get the response as JSON
     (cleaned of ok/response_metadata, cursor as `_next_cursor`)
@@ -262,6 +265,10 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     if method == "_rights":
         from atlas_slack.gate import rights
         return rights()
+    if method == "_comm_id":
+        # A journal-unique comm_id for the ledger, noted as the comm's first sighting (invariant x:
+        # ttl_s counts from here). No Slack call. The same id then goes into provenance.comm_id.
+        return _mint_comm_id_locally()
     if method in STREAM_METHODS and not as_bot:
         raise _slack_error(
             "user_token_stream",
@@ -274,10 +281,12 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     effect = classify(method, call_params)
     if effect.route == "core":
         res = _core_send(method, call_params, as_bot, provenance, profile)
-        tail = (f"\njournal: op {res.op_id} ok" if not res.journal_error else
+        comm = (f" · comm {res.comm_id}" + (" (minted by the door — record it in the ledger)"
+                                             if res.comm_minted else "")) if res.comm_id else ""
+        tail = (f"\njournal: op {res.op_id} ok{comm}" if not res.journal_error else
                 f"\n⚠ outcome_not_journaled: sent (ts={res.data.get('ts', '?')}) but the outcome could not be "
                 f"journaled ({res.journal_error}) — the message IS in Slack; do not resend. op {res.op_id} stays "
-                "pending → unknown in the journal.")
+                f"pending → unknown in the journal.{comm}")
         return format_response(method, res.data, req_params=params or {}, raw=raw) + tail
     # Reads and transitional writes: the verdict still applies (freeze, identity
     # overrides, refused methods, broken profile, invalid policy); execution is
@@ -324,6 +333,23 @@ def _observe(profile, method: str, as_bot: bool, status: str, error_code: str | 
     """Call-journal row for reads and transitional writes — best effort, never content."""
     core.record_call(profile, method, status, as_bot=as_bot, caller="mcp", error_code=error_code,
                      latency_ms=int((time.monotonic() - t0) * 1000))
+
+
+def _mint_comm_id_locally() -> str:
+    from atlas_slack.journal import JournalUnavailable, open_journal
+    from atlas_slack.profile import load_profile
+    profile = load_profile()
+    from atlas_slack.provenance import mint_comm_id
+    v = evaluate("_comm_id", {}, False, None, profile, load_policy(profile), face="mcp")
+    if v.decision == REFUSE:
+        raise _slack_error(v.reason, v.message)
+    try:
+        j = open_journal(profile.journal_dir)
+    except JournalUnavailable as e:
+        raise _slack_error("journal_unavailable", f"cannot mint a comm_id without the journal: {e}") from e
+    cid = mint_comm_id(lambda c: j.comm_first_seen(c) is not None or j.has_comm(c))
+    j.note_comm_seen(cid)
+    return f"comm_id: {cid}\n(first sighting noted now; put it in the ledger file and in provenance.comm_id)"
 
 
 def _core_send(method: str, params: dict, as_bot: bool, provenance: dict | None, profile) -> "core.SendResult":
