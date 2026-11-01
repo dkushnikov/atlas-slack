@@ -201,11 +201,17 @@ res = door.call("chat.postMessage", {"channel": channel, "text": text}, as_bot=T
 })
 if res.verdict.decision != "allow":
     if res.verdict.reason == "duplicate_comm_id":
-        pass                                 # an earlier run delivered it — record the finding as sent
+        # the comm already has a blocking row: `ok` (an earlier run delivered it) — or `pending` (a send
+        # in flight, or a process that died minutes ago), which is NOT delivery: ask the journal
+        from atlas_slack import core
+        rows = core.open_journal(door.profile.journal_dir).find_by_comm_id(comm_id)
+        if not any(r["outcome"] == "ok" for r in rows):
+            raise SystemExit("an earlier send is still pending — retry next run")
+        pass                                 # delivered — record the finding as sent
     else:
         raise SystemExit(f"refused {res.verdict.reason}: {res.verdict.message}")   # exit non-zero, retry next run
 elif res.error:
     raise SystemExit(f"send failed: {res.error}")   # error or unknown; the next run's _reconcile settles an unknown
 ```
 
-Only the bot token is in the job's environment (invariant i: a job never holds the person's token). The same text to any other channel is class C1 under the door's own rule and refuses `no_notary`; a `comm_id` with an `unknown` row refuses `reconcile_required` until `_reconcile` resolves it, which is why the job calls it before every send. A failed send (`error`) does not block a retry: only `ok`, `pending` and `unknown` rows do.
+Only the bot token is in the job's environment (invariant i: a job never holds the person's token). The same text to any other channel is class C1 under the door's own rule and refuses `no_notary`; a `comm_id` with an `unknown` row refuses `reconcile_required` until `_reconcile` resolves it, which is why the job calls it before every send. A failed send (`error`) does not block a retry: only `ok`, `pending` and `unknown` rows do. Two more rules a job's own state has to carry, since the door knows communications and not the job's windows: record the digest (text, window, `comm_id`) **before** the send and replay exactly that record first on the next run — a run that dies after the send must not rebuild the window, or new findings fold into a communication the journal already holds as delivered; and keep the `comm_id` in that record, so a date-stamped id survives the date change.
