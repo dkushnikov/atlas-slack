@@ -193,9 +193,10 @@ channel = "D0ACMEBOTDM"
 door = Door("acme", manifest={"cls": "C2", "allowed_methods": ["chat.postMessage"],
                               "allowed_targets": [channel]})
 door.call("_reconcile")                      # settle unknown outcomes of earlier runs first; reads only
+comm_id = f"nightly-{day}-{digest}"          # one id per communication: the same report twice in a day is one
 res = door.call("chat.postMessage", {"channel": channel, "text": text}, as_bot=True, provenance={
-    "cls": "C2", "comm_id": f"nightly-{day}-{digest}",   # one id per communication: the same report twice
-    "prepared_by": "job:nightly-check@acme-node",         # in a day is one comm, a repeat refuses duplicate_comm_id
+    "cls": "C2", "comm_id": comm_id,                     # comm — a repeat answers duplicate_comm_id (see below)
+    "prepared_by": "job:nightly-check@acme-node",
     "target": {"channel": channel},
     "sources": ["the job's own reads"],
 })
