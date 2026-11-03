@@ -32,6 +32,7 @@ from slack_sdk.errors import SlackApiError
 from atlas_slack import decision as decision_mod
 from atlas_slack import prior as prior_mod
 from atlas_slack import identity, shaping
+from atlas_slack.formatters import error_fields
 from atlas_slack.journal import (
     DecisionRejected, DuplicateComm, DuplicateOp, JournalUnavailable, OpIntent, open_journal, token_hash,
 )
@@ -66,13 +67,15 @@ class Refused(Exception):
 class SendFailed(Exception):
     """The Slack call was made (intent journalled) and did not succeed."""
 
-    def __init__(self, code: str, detail: str, op_id: str, outcome: str, verdict: Verdict | None = None):
+    def __init__(self, code: str, detail: str, op_id: str, outcome: str, verdict: Verdict | None = None,
+                 fields: str = ""):
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
         self.op_id = op_id
         self.outcome = outcome   # error | unknown
         self.verdict = verdict
+        self.fields = fields     # Slack's own detail fields beside the code (`needed` / `provided`), v1.11
 
 
 @dataclass
@@ -373,7 +376,7 @@ def _call(journal, transport, profile, method, final, as_bot, op_id, caller, ver
             _quiet(journal.record_outcome, op_id, "error", error_code=code)
             record_call(profile, method, "error", as_bot=as_bot, caller=caller, error_code=code,
                         latency_ms=latency, op_id=op_id, journal=journal)
-            raise SendFailed(code, "", op_id, "error", verdict) from e
+            raise SendFailed(code, "", op_id, "error", verdict, fields=error_fields(e.response)) from e
         if code:
             _quiet(journal.mark_unknown, op_id, error_code=code)
             record_call(profile, method, "unknown", as_bot=as_bot, caller=caller, error_code=code,
@@ -405,7 +408,7 @@ def _call(journal, transport, profile, method, final, as_bot, op_id, caller, ver
         _quiet(journal.record_outcome, op_id, "error", error_code=code)
         record_call(profile, method, "error", as_bot=as_bot, caller=caller, error_code=code,
                     latency_ms=latency, op_id=op_id, journal=journal)
-        raise SendFailed(code, "", op_id, "error", verdict)
+        raise SendFailed(code, "", op_id, "error", verdict, fields=error_fields(data))
     return data, latency
 
 

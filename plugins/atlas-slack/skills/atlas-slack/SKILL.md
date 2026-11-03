@@ -7,7 +7,7 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 Works on its own. Where the official Slack MCP is installed too, the two coexist (that one covers canvas and semantic search; this one the full Web API, two voices, attribution and the write gate) — and when both could perform a write, use `slack_api`: the guarantees below (two voices, a decision per operation, the journal) apply only to calls made through it.
 
-Two tools, that's the whole surface (since v1.2; output contract v1.10, plugin 0.7.0):
+Two tools, that's the whole surface (since v1.2; output contract v1.11, plugin 0.7.2):
 
 - **`slack_api(method, params, as_bot=?)`** — every Slack Web API method (200+).
 - **`slack_download(file_id, out_dir?, as_bot?)`** — file bytes to local disk (the JSON API never serves file content).
@@ -132,7 +132,7 @@ Reads → user token. Writes → `as_bot` flag picks bot or user. All writes gat
 
 **Identity at connect (0.7.0):** before the first write under each token in a session — after policy and the decision check, before the journal intent — the door asks Slack `auth.test` once (a read) and compares the answer with the profile; transitional writes get the same check, reads do not. `Error: identity_mismatch` (another workspace, another person, a bot token in the user slot or the reverse) means **nothing was sent** and nothing will be until the profile or the token is fixed: tell the person to run `python3 -m atlas_slack doctor` and restart the session — do not retry, do not switch `as_bot` to get around it. `Error: identity_unverified` (Slack gave no usable answer: unreachable, or the token is invalid/revoked) also means nothing was sent; the check runs again at the next call — call once more, and if it persists, `doctor`.
 
-## Sending a message — v2 core (contract v1.10)
+## Sending a message — v2 core (contract v1.11)
 
 The six message sends go through the door's core (0.6.0): `chat.postMessage`, `chat.scheduleMessage`, `chat.update`, `chat.postEphemeral`, `chat.meMessage`, `files.uploadV2` — policy → provenance → your human's decision → journal (written **before** the send) → Slack. A scheduled send needs `post_at` (epoch seconds, 1 min … 120 days ahead); it is bound into the approval, so changing the time means a new approval. **A time edit from the approval card** («tomorrow», «in an hour») is answered with `chat.scheduleMessage` — the same card, with the time in its first line. **An edit** (`chat.update`) needs `ts` and the new `text`, and belongs to the **original's `comm_id`** — an edit is a new version of the same communication, not a resend (no `resend` flag, no `duplicate_comm_id`); when the door posted the original, the edit inherits that `comm_id` (and `parent_op_id`) from the journal by `ts` — so you may omit `comm_id`; pass a `comm_id` only for a message the door did not post. Other provenance fields (`checks`, `target.users`) may be passed either way. The door reads the message before the card («was / becomes» — when the read fails the card says «⚠ not read» and the server reads again before the send), journals the prior text, and refuses `author_mismatch` when the original was posted by another identity (the bot edits the bot's, the person edits theirs — pick `as_bot` by the original; a post by the bot, or a bot post with no `user`, is never edited in the person's voice). **An ephemeral** needs `user`; that viewer is a bound recipient (deny lists apply; change the user → new approval). Everything else still runs on the labelled *transitional* path (compact card, no journal op, no binding): reactions, pins, delete, deleteScheduledMessage, structure (`conversations.*`, usergroups), and the row-1 writes that are not message sends — `files.completeUploadExternal`, canvases, streams, `chat.unfurl`, `reminders.add`, `views.publish`, topic/purpose/rename.
 
@@ -186,7 +186,7 @@ When composing Slack messages, use mrkdwn (NOT standard Markdown):
 
 No headers (`##`), no horizontal rules (`---`), no `[text](url)` links.
 
-## Reading the output (contract v1.10)
+## Reading the output (contract v1.11)
 
 - **Errors are structural**: a failed Slack call comes back as an MCP tool error (`is_error=true`) with text `Error: <code> — <hint>`. Success text never starts with `Error:`.
 - **List responses lead with an args echo**: `» conversations.members channel=C123` — use it to match parallel responses to their calls.

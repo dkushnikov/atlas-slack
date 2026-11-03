@@ -1,7 +1,8 @@
 """Format Slack API responses into human-readable text per output-contract.md.
 
 See ../../docs/output-contract.md for the contract this module implements.
-The public API is `format_response(method, resp)` and `format_error(code, detail)`.
+The public API is `format_response(method, resp)`, `format_error(code, detail, fields=...)`
+and `error_fields(resp)`.
 """
 
 import json
@@ -12,7 +13,7 @@ from typing import Callable
 ERROR_HINTS: dict[str, str] = {
     "channel_not_found": "DM channel IDs are per-viewer; try conversations.open from the correct token side.",
     "not_in_channel": "The posting voice is not a member of that channel: the bot's voice needs a person to invite it in Slack (/invite; conversations.invite needs channels:manage), your voice needs you to join — then the same call, same voice.",
-    "missing_scope": "Token lacks the scope; check auth.test for granted scopes.",
+    "missing_scope": "the app lacks a scope for this voice: add the needed scope(s) under OAuth & Permissions (user or bot token), reinstall the app, update the token in the environment (as of 2026-10 it changes on reinstall).",
     "cannot_dm_bot": "Target is a bot account — DMs not supported.",
     "is_archived": "Channel is archived; unarchive first or pick another.",
     "invalid_blocks": "Per-block limits exceeded — section text caps at 3000 chars; split into multiple sections or pre-check with blocks.validate.",
@@ -33,12 +34,50 @@ LIST_CAPS: dict[str, int] = {
 
 LABEL_CAP = 200
 
+# Fields Slack puts beside `error` on an `ok: false` answer (§10). `missing_scope`
+# carries `needed` (the scope or scopes the method wants, comma-separated as Slack
+# sends them; Slack does not document what several mean) and `provided` (the scopes
+# the token has). They are facts, rendered before the hint —
+# a caller that reads `needed: todos:read` knows what to add without a second call
+# (2026-11-02: the door dropped both, and the scope name had to be guessed).
+ERROR_FIELDS = ("needed", "provided")
+
 
 # === Public API ===
 
-def format_error(error_code: str, detail: str = "") -> str:
-    """Format an API error. If `detail` is empty, look up hint catalogue."""
+def error_fields(resp) -> str:
+    """`needed: a, b · provided: c, d` from Slack's own detail fields; '' when none.
+
+    `resp` is the raw answer — a dict or a slack_sdk SlackResponse (both have .get).
+    """
+    if not resp:
+        return ""
+    parts = []
+    for key in ERROR_FIELDS:
+        try:
+            val = resp.get(key)
+        except Exception:
+            return ""
+        if not val:
+            continue
+        if isinstance(val, (list, tuple)):
+            val = ",".join(str(v) for v in val)
+        items = [s.strip() for s in str(val).split(",") if s.strip()]
+        if items:
+            parts.append(f"{key}: {', '.join(items)}")
+    return " · ".join(parts)
+
+
+def format_error(error_code: str, detail: str = "", fields: str = "") -> str:
+    """Format an API error: `Error: <code>[ — <fields>][ — <detail> | <hint>]`.
+
+    `fields` are facts from Slack's answer (`error_fields`): shown first, never
+    instead of the hint. `detail` is the caller's own text and replaces the
+    catalogue hint (a pre-flight refusal is its own hint).
+    """
     msg = f"Error: {error_code}"
+    if fields:
+        msg += f" — {fields}"
     if detail:
         msg += f" — {detail}"
     elif error_code in ERROR_HINTS:
@@ -50,7 +89,7 @@ def format_response(method: str, resp: dict, req_params: dict | None = None, raw
     """Dispatch a Slack API response to its shape handler per output-contract.md.
 
     Order of operations:
-      1. If ok=False → format_error with hint lookup.
+      1. If ok=False → format_error with Slack's detail fields (`needed` / `provided`) and hint lookup.
       2. Extract warnings + cursor from response_metadata before stripping.
       3. If method is empty-success or cleaned dict is empty → 'Done ✓'.
       4. Otherwise dispatch by method, falling back to shape inference, then JSON.
@@ -60,7 +99,7 @@ def format_response(method: str, resp: dict, req_params: dict | None = None, raw
     dumped as JSON (§4.16) with no args-echo — for delivery checks and debugging.
     """
     if not resp.get("ok", True):
-        return format_error(resp.get("error", "unknown_error"))
+        return format_error(resp.get("error", "unknown_error"), fields=error_fields(resp))
 
     cursor = (resp.get("response_metadata") or {}).get("next_cursor") or ""
     warnings = _extract_warnings(resp)

@@ -13,7 +13,7 @@ from atlas_slack import identity
 from atlas_slack.client import get_client
 from atlas_slack.policy import REFUSE, classify, evaluate, load_policy
 from atlas_slack.profile import load_profile
-from atlas_slack.formatters import format_response, format_error, ERROR_HINTS
+from atlas_slack.formatters import format_response, format_error, error_fields, ERROR_HINTS
 
 mcp = FastMCP(
     "atlas-slack",
@@ -98,15 +98,16 @@ DEFAULT_HISTORY_LIMIT = 100
 RAW_FLAG = "_raw"
 
 
-def _slack_error(code: str, detail: str = "") -> ToolError:
+def _slack_error(code: str, detail: str = "", fields: str = "") -> ToolError:
     """Build a structural tool error (output-contract v1.2 §10).
 
     FastMCP converts a raised ToolError into an MCP result with is_error=true,
     so callers detect Slack failures structurally instead of parsing text.
     The text (with the ERROR_HINTS recovery hint, when catalogued) is preserved
-    as the error message.
+    as the error message; `fields` carries Slack's own detail fields
+    (`needed` / `provided` on `missing_scope`, v1.11) before the hint.
     """
-    return ToolError(format_error(code, detail))
+    return ToolError(format_error(code, detail, fields=fields))
 
 
 def _error_code_from(e: SlackApiError) -> str:
@@ -288,7 +289,7 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         code = _error_code_from(e)
         _observe(profile, method, as_bot, "error", code or "exception", t0)
         if code:
-            raise _slack_error(code) from e
+            raise _slack_error(code, fields=error_fields(e.response)) from e
         raise _slack_error("exception", str(e)) from e
     except ToolError:
         if not observed:                 # an identity refusal above already has its row
@@ -299,7 +300,7 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         raise _slack_error("exception", str(e)) from e
     if not data.get("ok", True):
         _observe(profile, method, as_bot, "error", data.get("error") or "unknown_error", t0)
-        raise _slack_error(data.get("error") or "unknown_error")
+        raise _slack_error(data.get("error") or "unknown_error", fields=error_fields(data))
     _observe(profile, method, as_bot, "ok", None, t0)
     # Echo the caller's original args (pre-injection) — see _args_echo (v1.2 §8)
     out = format_response(method, data, req_params=params or {}, raw=raw)
@@ -414,7 +415,7 @@ def _core_send(method: str, params: dict, as_bot: bool, provenance: dict | None,
         if e.outcome == "unknown":
             raise _slack_error("outcome_unknown", f"{e.detail}") from e
         raise _slack_error(e.code, f"{ERROR_HINTS.get(e.code, '')}{' — ' if ERROR_HINTS.get(e.code) else ''}"
-                                   f"journal: op {e.op_id} error") from e
+                                   f"journal: op {e.op_id} error", fields=e.fields) from e
 
 
 # Register slack_download on the same mcp instance (the one operation the

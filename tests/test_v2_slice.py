@@ -570,6 +570,12 @@ channels:
                     provenance={"cls": "C2"})
     assert res.error == "not_in_channel (error)" and res.verdict.reason == "policy_auto"
     assert len(env.transport.calls) == 1
+    # v1.11 — Slack's needed / provided ride on the error string (a failed send has no data)
+    env.transport.exc = SlackApiError("x", {"ok": False, "error": "missing_scope", "needed": "chat:write",
+                                            "provided": "identify"})
+    res = door.call("chat.postMessage", {"channel": env.ids["person_bot_dm_id"], "text": "report b"}, as_bot=True,
+                    provenance={"cls": "C2"})
+    assert res.error == "missing_scope (error) — needed: chat:write · provided: identify" and res.data is None
     env.transport.exc = None
     ok = door.call("chat.postMessage", {"channel": env.ids["person_bot_dm_id"], "text": "report 2"}, as_bot=True,
                    provenance={"cls": "C2"})

@@ -147,7 +147,9 @@ class Door:
             except core.Refused as e:
                 return DoorResult(e.verdict)
             except core.SendFailed as e:
-                return DoorResult(e.verdict, op_id=e.op_id, error=f"{e.code} ({e.outcome})")
+                # Slack's detail fields (`needed` / `provided`) ride on the error string: a failed send has no data
+                err = f"{e.code} ({e.outcome})" + (f" — {e.fields}" if e.fields else "")
+                return DoorResult(e.verdict, op_id=e.op_id, error=err)
             return DoorResult(res.verdict, data=res.data, op_id=res.op_id, comm_id=res.comm_id)
 
         v = evaluate(method, params, as_bot, provenance, self.profile, load_policy(self.profile),

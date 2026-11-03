@@ -2,7 +2,7 @@
 
 **Slack for Claude Code, with checks you set for yourself. The access an agent gets anyway — plus a declared voice on every message, a card before anything leaves, a local record, and recovery instead of blind retries.**
 
-> **Status: 0.7.1.** Works with a plain Claude Code setup and a Slack workspace of your own — no AI-partner framework, no other service. The door core has run the author's Slack since 2026-10-28; the six message sends go through it; identity is checked at connect. Named after [Atlas Seed](https://github.com/dkushnikov/atlas-seed) (an identity layer for an AI partner) because it was built for that partner; it does not need it.
+> **Status: 0.7.2.** Works with a plain Claude Code setup and a Slack workspace of your own — no AI-partner framework, no other service. The door core has run the author's Slack since 2026-10-28; the six message sends go through it; identity is checked at connect. Named after [Atlas Seed](https://github.com/dkushnikov/atlas-seed) (an identity layer for an AI partner) because it was built for that partner; it does not need it.
 
 ---
 

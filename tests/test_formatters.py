@@ -13,6 +13,7 @@ Fixture style: response dicts mirror real Slack API shapes.
 from atlas_slack.formatters import (
     format_response,
     format_error,
+    error_fields,
     ERROR_HINTS,
     LIST_CAPS,
     LABEL_CAP,
@@ -54,6 +55,47 @@ class TestErrors:
             "missing_scope", "cannot_dm_bot", "is_archived",
             "invalid_blocks",
         }
+
+    # --- v1.11: Slack's own detail fields (`needed` / `provided`) travel with the error
+
+    def test_missing_scope_carries_needed_and_provided_before_the_hint(self):
+        resp = {"ok": False, "error": "missing_scope",
+                "needed": "todos:read", "provided": "identify,channels:history,chat:write"}
+        result = format_response("todos.list", resp)
+        assert result == (
+            "Error: missing_scope — needed: todos:read · provided: identify, channels:history, chat:write"
+            f" — {ERROR_HINTS['missing_scope']}"
+        )
+
+    def test_missing_scope_without_fields_keeps_the_hint_alone(self):
+        result = format_response("todos.list", {"ok": False, "error": "missing_scope"})
+        assert result == f"Error: missing_scope — {ERROR_HINTS['missing_scope']}"
+
+    def test_fields_render_for_any_code(self):
+        # the formatter does not special-case the code: whatever Slack puts beside `error` is shown
+        result = format_response("x.y", {"ok": False, "error": "weird_thing", "needed": "a:b"})
+        assert result == "Error: weird_thing — needed: a:b"
+
+    def test_error_fields_shapes(self):
+        assert error_fields(None) == ""
+        assert error_fields({}) == ""
+        assert error_fields({"ok": False, "error": "x"}) == ""
+        assert error_fields({"needed": "todos:read"}) == "needed: todos:read"
+        assert error_fields({"provided": "a,b"}) == "provided: a, b"
+        assert error_fields({"needed": "a, b ,", "provided": ["c", "d"]}) == "needed: a, b · provided: c, d"
+        assert error_fields({"needed": "", "provided": None}) == ""
+
+    def test_error_fields_reads_a_slack_response_object(self):
+        from slack_sdk.web.slack_response import SlackResponse
+        resp = SlackResponse(client=None, http_verb="POST", api_url="x", req_args={}, headers={}, status_code=200,
+                             data={"ok": False, "error": "missing_scope", "needed": "todos:read", "provided": "p:q"})
+        assert error_fields(resp) == "needed: todos:read · provided: p:q"
+
+    def test_format_error_fields_first_then_detail_overrides_hint(self):
+        assert format_error("missing_scope", "custom", fields="needed: x") == (
+            "Error: missing_scope — needed: x — custom"
+        )
+        assert format_error("custom_xyz", fields="needed: x") == "Error: custom_xyz — needed: x"
 
 
 # === §4.1 single message ===

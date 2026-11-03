@@ -102,6 +102,16 @@ def test_download_file_not_found(mock_webclient, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_download_missing_scope_names_needed_and_provided(mock_webclient, tmp_path):
+    """v1.11 — files.info refused with missing_scope: slack_download's error carries Slack's fields too."""
+    mock_webclient.files_info.return_value = {"ok": False, "error": "missing_scope",
+                                              "needed": "files:read", "provided": "identify"}
+    with patch("atlas_slack.tools.httpx.get") as get:
+        with pytest.raises(ToolError, match="needed: files:read · provided: identify"):
+            slack_download("F123", out_dir=str(tmp_path))
+    get.assert_not_called()
+
+
 def test_download_http_error(mock_webclient, tmp_path):
     mock_webclient.files_info.return_value = _file_info()
     with patch("atlas_slack.tools.httpx.get", return_value=_http_response(status_code=403)):

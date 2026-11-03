@@ -74,6 +74,39 @@ def test_slack_api_sdk_error_code_extracted_with_hint(mock_webclient):
     assert "DM channel IDs are per-viewer" in str(exc_info.value)
 
 
+def test_slack_api_missing_scope_names_needed_and_provided(mock_webclient):
+    """v1.11 — Slack's `needed` / `provided` beside `missing_scope` reach the error text on both
+    failure paths: the SDK exception (the WebClient raises on ok=false) and a plain ok=false answer.
+    Before, the door dropped them and the caller had to guess the scope name (todos.list, 2026-11-02)."""
+    answer = {"ok": False, "error": "missing_scope", "needed": "todos:read",
+              "provided": "identify,channels:history,chat:write"}
+    mock_webclient.api_call.side_effect = SlackApiError(message="The request to the Slack API failed.",
+                                                        response=dict(answer))
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("todos.list")
+    text = str(exc_info.value)
+    assert "Error: missing_scope — needed: todos:read · provided: identify, channels:history, chat:write — " in text
+    assert "OAuth & Permissions" in text          # the hint still follows the facts
+
+    mock_webclient.api_call.side_effect = None
+    mock_webclient.api_call.return_value = dict(answer)
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("todos.list")
+    assert "needed: todos:read · provided: identify, channels:history, chat:write" in str(exc_info.value)
+
+
+def test_core_send_missing_scope_names_needed_and_provided(mock_webclient):
+    """v1.11 — the same fields on the core-send path: fields, then the hint, then the journal line."""
+    mock_webclient.api_call.side_effect = SlackApiError(
+        message="The request to the Slack API failed.",
+        response={"ok": False, "error": "missing_scope", "needed": "chat:write", "provided": "identify"})
+    with pytest.raises(ToolError) as exc_info:
+        slack_api("chat.postMessage", {"channel": "C1", "text": "hi"})
+    text = str(exc_info.value)
+    assert text.startswith("Error: missing_scope — needed: chat:write · provided: identify — ")
+    assert "OAuth & Permissions" in text and "journal: op " in text and text.endswith(" error")
+
+
 def test_slack_api_sdk_error_without_code_falls_back_to_exception(mock_webclient):
     mock_webclient.api_call.side_effect = SlackApiError(message="boom", response=None)
     with pytest.raises(ToolError, match="exception"):

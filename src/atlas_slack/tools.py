@@ -19,7 +19,7 @@ from fastmcp.exceptions import ToolError
 
 from atlas_slack.gateway import mcp
 from atlas_slack.client import get_client
-from atlas_slack.formatters import format_error, _human_size
+from atlas_slack.formatters import format_error, error_fields, _human_size
 
 
 def _call_raw(fn, **kwargs) -> dict:
@@ -58,7 +58,7 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False, vtt: b
         client = get_client(as_bot=as_bot)
         info = _call_raw(client.files_info, file=file_id)
         if not info.get("ok", True):
-            raise ToolError(format_error(info.get("error") or "unknown_error"))
+            raise ToolError(format_error(info.get("error") or "unknown_error", fields=error_fields(info)))
         f = info.get("file") or {}
         if vtt:
             url = f.get("vtt")

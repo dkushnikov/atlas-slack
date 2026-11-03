@@ -721,6 +721,26 @@ def test_cx2_internal_error_is_unknown_not_error(env):
     assert e.value.outcome == "error"                                           # a definite refusal stays an error
 
 
+def test_missing_scope_fields_ride_on_send_failed(env):
+    """v1.11 — a core send refused with missing_scope carries Slack's needed / provided (both transport shapes)."""
+    answer = {"ok": False, "error": "missing_scope", "needed": "chat:write", "provided": "identify,channels:read"}
+    env.transport = FakeTransport()
+    env.transport.exc = SlackApiError("x", dict(answer))
+    with pytest.raises(core.SendFailed) as e:
+        env.send(env.approve(post(comm_id="20261102-ms1")))
+    assert e.value.outcome == "error" and e.value.code == "missing_scope"
+    assert e.value.fields == "needed: chat:write · provided: identify, channels:read"
+    env.transport = type("T", (FakeTransport,), {"__call__": lambda self, m, p, b: dict(answer)})()
+    with pytest.raises(core.SendFailed) as e:
+        env.send(env.approve(post(comm_id="20261102-ms2")))
+    assert e.value.fields == "needed: chat:write · provided: identify, channels:read"
+    env.transport = FakeTransport()
+    env.transport.exc = SlackApiError("x", {"ok": False, "error": "channel_not_found"})
+    with pytest.raises(core.SendFailed) as e:
+        env.send(env.approve(post(comm_id="20261102-ms3")))
+    assert e.value.fields == ""                                                  # no fields → nothing invented
+
+
 def test_cx3_door_by_name_sees_freeze_between_calls(env):
     env.policy(f"""
 version: "r3"
