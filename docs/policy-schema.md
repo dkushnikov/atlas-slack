@@ -116,7 +116,7 @@ Allowed `modes` per class. Anything else makes the policy invalid:
 |---|---|---|
 | `A`, `B-h` | `human`, `deny` | a human decides each send, or the class is off here |
 | `B-a`, `C1` | `stamp`, `deny` | needs a notary stamp (none exists yet → refuse), or off |
-| `C2` | `auto`, `deny` | report without a decision (only to the person's bot DM), or off |
+| `C2` | `auto`, `deny` | report without a decision (only to the person: their bot DM or their user id), or off |
 
 A channel not listed gets the strictest row: `A: human, B-h: human, B-a: deny, C1: deny, C2: deny`. A listed channel inherits the strictest mode for every class it does not name.
 
