@@ -2,6 +2,7 @@
 
     python3 -m atlas_slack                      MCP server on stdio (what the plugin's .mcp.json runs)
     python3 -m atlas_slack init [--profile NAME] [--user-var VAR --bot-var VAR] [--force]
+    python3 -m atlas_slack init [--profile NAME] --policy-path PATH [--pin | --no-pin]   # attach a policy; offline
     python3 -m atlas_slack doctor [--profile NAME]   # ends with one `next: <code> — …` line; exit 0 only on `send`
 """
 
@@ -57,10 +58,168 @@ def _bot_dm(profile, person_user_id: str) -> str | None:
         return None
 
 
+def policy_line(st, pinned: bool, path: str) -> str:
+    """`policy: <version> sha256 <12 hex> pinned|unpinned <path>` — init's answer, and doctor's line for a valid policy."""
+    return f"policy: {st.version} sha256 {st.digest[:12]} {'pinned' if pinned else 'unpinned'} {path}"
+
+
+def _yaml_line(key: str, value) -> str:
+    import yaml
+    return yaml.safe_dump({key: value}, default_flow_style=False, allow_unicode=True, width=10**6)
+
+
+def _set_top_level(text: str, updates: dict) -> str:
+    """Replace, add (at the end) or remove (value None) top-level `key: value` lines; every other line stays as it is.
+
+    A replaced key's continuation lines (indented) go with it. The caller re-parses the result and compares it
+    with the expected mapping — a file this line edit cannot handle falls back to a full rewrite.
+    """
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    done: set[str] = set()
+    i = 0
+    while i < len(lines):
+        m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", lines[i])
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            j = i + 1
+            while j < len(lines) and lines[j].startswith((" ", "\t")):
+                j += 1
+            if key not in done and updates[key] is not None:
+                out.append(_yaml_line(key, updates[key]))
+            done.add(key)
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    tail = [_yaml_line(k, v) for k, v in updates.items() if k not in done and v is not None]
+    if tail and out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+    return "".join(out + tail)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """temp file in the same directory + rename: a hook reading the profile meanwhile sees the old or the new file."""
+    import stat
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def cmd_init_policy(args) -> int:
+    """`init --policy-path PATH [--pin | --no-pin]`: attach a context policy to an existing profile.
+
+    Writes `policy_path` (the string as given) and, with `--pin`, `policy_sha256`; `--no-pin` removes the pin.
+    Every other key and line of the file stays as it is. No tokens, no network. The policy is loaded and
+    validated by the door's own loader first: a missing or invalid file, or a pin that no longer matches
+    (without `--pin`), writes nothing.
+    """
+    import yaml
+
+    from atlas_slack.policy import load_policy
+    from atlas_slack.profile import _NAME_RE, Profile, config_dir, load_profile
+    err = lambda msg: print(msg, file=sys.stderr)   # noqa: E731
+    if args.force or args.user_var is not None or args.bot_var is not None:
+        err("--policy-path attaches a policy to an existing profile and touches nothing else; it does not combine with "
+            "--force / --user-var / --bot-var — run the identity init first, then init --policy-path … as a second command")
+        return 2
+    if args.policy_path is None:
+        err("--pin / --no-pin go with --policy-path PATH (the policy file to pin or unpin)")
+        return 2
+    name = args.profile or os.environ.get("ATLAS_SLACK_PROFILE") or "default"
+    if not _NAME_RE.match(name):
+        err(f"profile name {name!r} is not valid: letters, digits, `_ . -`, up to 64 chars, no path parts")
+        return 2
+    pflag = f" --profile {name}" if name != "default" else ""
+    path = config_dir() / f"{name}.yaml"
+    if not path.exists():
+        err(f"profile not found — run init (identity) first: python3 -m atlas_slack init{pflag}"
+            + (" --user-var <VAR> --bot-var <VAR>" if name != "default" else "") + f" (no {path})")
+        return 2
+    given = args.policy_path
+    if not given or given != given.strip() or any(ch < " " for ch in given):
+        err(f"--policy-path {given!r}: one line, no surrounding whitespace")
+        return 2
+    expanded = Path(given).expanduser()
+    if not expanded.is_absolute():
+        err(f"--policy-path {given!r} must be absolute or start with ~ — the hook and the MCP server run from "
+            "different directories, a relative path would name two files")
+        return 2
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+    except Exception as e:  # noqa: BLE001
+        err(f"cannot read {path} ({type(e).__name__}: {e}) — nothing written; doctor{pflag} says what to fix")
+        return 2
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        err(f"{path} is not a mapping — nothing written; doctor{pflag} says what to fix")
+        return 2
+    # the door's own loader decides: the same yaml.safe_load + validate_policy + digest a send uses
+    st = load_policy(Profile(name=name, source="file", policy_path=str(expanded)))
+    if st.state == "builtin":
+        err(f"policy file missing: {expanded} — nothing written")
+        return 1
+    if st.state == "invalid":
+        err(f"policy invalid: {st.error} — nothing written")
+        return 1
+    old_pin = data.get("policy_sha256")
+    if args.pin:
+        pin = st.digest
+    elif args.no_pin:
+        pin = None
+    else:
+        pin = old_pin
+        if old_pin is not None and old_pin != st.digest:
+            shown = old_pin[:12] if isinstance(old_pin, str) else repr(old_pin)
+            err(f"the profile pins sha256 {shown}… but {given} is {st.digest[:12]}… — with that pin every write would "
+                f"refuse policy_invalid; nothing written. Check the file, then: init{pflag} --policy-path {given} --pin "
+                "(pin this file) or --no-pin (no pin)")
+            return 1
+    expected = {k: v for k, v in data.items() if k != "policy_sha256"}
+    expected["policy_path"] = given
+    if pin is not None:
+        expected["policy_sha256"] = pin
+    new_text = _set_top_level(text, {"policy_path": given, "policy_sha256": pin})
+    try:
+        same = yaml.safe_load(new_text) == expected
+    except Exception:  # noqa: BLE001
+        same = False
+    if not same:
+        # a layout the line edit cannot handle (flow mapping, a document marker …): rewrite the mapping, keep the header
+        import itertools
+        header = "".join(itertools.takewhile(lambda ln: ln.startswith("#"), text.splitlines(keepends=True)))
+        new_text = header + ("" if not header or header.endswith("\n") else "\n") + \
+            yaml.safe_dump(expected, sort_keys=False, allow_unicode=True)
+        print(f"note: {path} was rewritten as a whole (its layout did not allow a line edit); comments in its body are not kept",
+              file=sys.stderr)
+    if new_text != text:
+        _write_atomic(path, new_text)
+        check = load_profile(name)
+        back = load_policy(check)
+        if check.policy_path != str(expanded) or back.state != "file" or back.digest != st.digest:
+            _write_atomic(path, text)                      # never leave a profile the door reads differently
+            err(f"the written profile did not read back as intended ({back.state}: {back.error or back.note}) — "
+                f"restored {path} as it was")
+            return 1
+        if check.errors:
+            err(f"note: the profile has other problems — doctor{pflag} shows them: {'; '.join(check.errors)}")
+    print(policy_line(st, pin is not None, given))
+    return 0
+
+
 def cmd_init(args) -> int:
     import yaml
 
     from atlas_slack.profile import DEFAULT_TOKEN_SOURCES, _NAME_RE, config_dir, load_profile
+    if args.policy_path is not None or args.pin or args.no_pin:
+        return cmd_init_policy(args)
     name = args.profile or os.environ.get("ATLAS_SLACK_PROFILE") or "default"
     if not _NAME_RE.match(name):
         print(f"profile name {name!r} is not valid: letters, digits, `_ . -`, up to 64 chars, no path parts "
@@ -159,6 +318,19 @@ def cmd_init(args) -> int:
     else:
         print("then: doctor, and a restart of the Claude Code session before the first send")
     return 0
+
+
+def _doctor_policy_line(profile, st, pflag: str = "") -> str:
+    """doctor's policy line: version, sha256, pinned/unpinned, path, and valid — or invalid with the loader's error."""
+    pinned = bool(profile.policy_sha256)
+    if not profile.policy_path:
+        return ("policy: built-in strict — the profile names no policy_path"
+                + (f" (init{pflag} --policy-path PATH attaches one)" if profile.source == "file" else ""))
+    if st.state == "builtin":
+        return f"policy: built-in strict — {st.note}"
+    if st.state == "invalid":
+        return f"policy: ✗ invalid — {st.error} · {'pinned' if pinned else 'unpinned'} {profile.policy_path}"
+    return policy_line(st, pinned, profile.policy_path) + " · valid"
 
 
 NEXT_CODES = ("init", "fix-profile", "set-token", "new-token", "retry", "swap-tokens", "decide", "add-scope", "frozen",
@@ -290,7 +462,10 @@ def cmd_doctor(args) -> int:
         first("frozen", f"freeze: true in {profile.path or 'the profile'} — every write refuses until it is false (the person's call)")
     pol = load_policy(profile)
     if pol.state == "invalid":
-        first("fix-policy", f"policy invalid: {pol.error} — every write refuses policy_invalid until the file or the pin is fixed")
+        repin = (f"; a pin left stale by an edit the person ratified: python3 -m atlas_slack init{pflag} --policy-path "
+                 f"{profile.policy_path} --pin" if pol.error.startswith("sha256 mismatch") and profile.policy_path else "")
+        first("fix-policy", f"policy invalid: {pol.error} — every write refuses policy_invalid until the file or the pin "
+                            f"is fixed{repin}")
     try:
         open_journal(profile.journal_dir)
     except JournalUnavailable as e:
@@ -299,6 +474,7 @@ def cmd_doctor(args) -> int:
         first("fix-journal", f"journal: {type(e).__name__}: {e}")
     if not profile.decision_adapters:
         first("fix-journal", "decision_adapters is empty in the profile — human-decided sends have no adapter; put [cc-hook] back")
+    print(_doctor_policy_line(profile, pol, pflag))
     print()
     print(rights(profile))
     if nxt is None:
@@ -324,6 +500,11 @@ def main(argv: list[str] | None = None):
         p_init.add_argument("--force", action="store_true", help="rewrite the identity fields of an existing profile (other keys kept)")
         p_init.add_argument("--user-var", metavar="VAR", help="env var holding the user token (default SLACK_USER_TOKEN; a second workspace)")
         p_init.add_argument("--bot-var", metavar="VAR", help="env var holding the bot token (default SLACK_BOT_TOKEN)")
+        p_init.add_argument("--policy-path", metavar="PATH",
+                            help="attach a context policy to an existing profile (writes policy_path only; no tokens, no network)")
+        pin = p_init.add_mutually_exclusive_group()
+        pin.add_argument("--pin", action="store_true", help="with --policy-path: also pin the file's sha256 (policy_sha256)")
+        pin.add_argument("--no-pin", action="store_true", help="with --policy-path: remove the pin (policy_sha256)")
         p_doc = sub.add_parser("doctor", help="check the tokens against the profile, print the rights table and ONE next step")
         p_doc.add_argument("--profile", help="profile name (default: $ATLAS_SLACK_PROFILE or `default`)")
         args = parser.parse_args(argv)
