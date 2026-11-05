@@ -404,7 +404,7 @@ Raised as `ToolError` like every row above, text `Error: <code> — <message>`. 
 | `target_mismatch` | `provenance.target.channel` ≠ `params.channel` |
 | `provenance_invalid` | provenance fails the schema (unknown fields, bad class, ...) |
 | `user_token_in_process` / `no_notary` | autonomous class B-a/C1 in a process holding the person's token / without a notary stamp |
-| `c2_not_to_person` | class C2 posting anywhere but the person's bot DM |
+| `c2_not_to_person` | class C2 posting anywhere but the person's bot DM or their user id (v1.12: the user id counts as the person too, as for `required_checks`) |
 | `attribution_unavailable` | person-voice send and the profile has no `bot_user_id` |
 | `token_unavailable` | the token env var for the chosen voice is not set |
 | `no_decision_adapter` | library face (`Door`): the send needs a human and the library has no adapter |
