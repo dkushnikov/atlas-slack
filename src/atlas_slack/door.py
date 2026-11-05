@@ -36,7 +36,7 @@ class DoorResult:
     verdict: Verdict
     data: dict | None = None
     op_id: str | None = None
-    error: str | None = None       # Slack error / unknown outcome after the call was made
+    error: str | None = None       # Slack error / unknown outcome after the call was made; a refusal's detail fields
     comm_id: str | None = None     # the caller's, or minted by the door
 
     @property
@@ -145,7 +145,9 @@ class Door:
                                         caller=(provenance or {}).get("prepared_by") or "door",
                                         identity_check=self._own_transport)
             except core.Refused as e:
-                return DoorResult(e.verdict)
+                # a refusal with detail fields (`check_missing`: needed / provided) carries them on `error` too,
+                # in the shape a failed send uses; other refusals keep `error` None (nothing was attempted)
+                return DoorResult(e.verdict, error=f"{e.code} (refused) — {e.fields}" if e.fields else None)
             except core.SendFailed as e:
                 # Slack's detail fields (`needed` / `provided`) ride on the error string: a failed send has no data
                 err = f"{e.code} ({e.outcome})" + (f" — {e.fields}" if e.fields else "")

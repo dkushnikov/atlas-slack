@@ -55,13 +55,15 @@ IDENTITY_HINTS = {
 
 
 class Refused(Exception):
-    """The door refused before any Slack call. `.verdict` carries the full verdict."""
+    """The door refused before any Slack call. `.verdict` carries the full verdict; `.fields` the reported
+    refusal's detail fields as text (`needed: … · provided: …` on `check_missing`, v1.12), '' when none."""
 
     def __init__(self, verdict: Verdict):
         super().__init__(f"{verdict.reason}: {verdict.message}")
         self.verdict = verdict
         self.code = verdict.reason
         self.message = verdict.message
+        self.fields = verdict.fields
 
 
 class SendFailed(Exception):

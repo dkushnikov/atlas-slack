@@ -247,8 +247,15 @@ STRICT_POLICY = {
     "report_channels": {},
     "defaults": {"unknown_channel": "strictest"},
 }
-_POLICY_KEYS = set(STRICT_POLICY)
+# `required_checks` (0.7.3) is accepted in a context policy but kept out of STRICT_POLICY: the built-in
+# policy requires nothing, and its digest (recorded on every journal row) stays what 0.7.2 recorded.
+_POLICY_KEYS = set(STRICT_POLICY) | {"required_checks"}
 _CHANNEL_KEYS = {"class", "voices", "approval", "modes", "name"}
+# A check name is a key of provenance.checks; no comma or space, so `needed: a, b` stays unambiguous.
+_CHECK_NAME_RE = __import__("re").compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
+# A declared value that says the check was NOT done does not satisfy it (the ledger's skip counts as
+# no pass too). Everything else non-empty is the context's claim — shown, never judged (A2).
+_CHECK_NEGATIVE = frozenset({"false", "no", "none", "null", "0", "fail", "failed", "skip", "skipped", "n/a"})
 
 
 def _digest_bytes(b: bytes) -> str:
@@ -326,6 +333,19 @@ def validate_policy(raw) -> dict:
     if not isinstance(rd, dict) or not all(k in CLASSES and isinstance(v, list) for k, v in rd.items()):
         raise ValueError("recipients_deny must map class → list of ids")
     pol["recipients_deny"] = {k: list(v) for k, v in rd.items()}
+    rc = raw.get("required_checks")
+    if rc is None:
+        rc = {}
+    if not isinstance(rc, dict):
+        raise ValueError("required_checks must map sender class → list of check names")
+    norm_rc = {}
+    for c, names in rc.items():
+        if c not in CLASSES:
+            raise ValueError(f"required_checks: unknown class {c!r} (classes: {list(CLASSES)})")
+        if not isinstance(names, list) or not all(isinstance(n, str) and _CHECK_NAME_RE.fullmatch(n) for n in names):
+            raise ValueError(f"required_checks.{c} must be a list of check names (letters, digits, _ . : -)")
+        norm_rc[c] = list(dict.fromkeys(names))
+    pol["required_checks"] = norm_rc
     if not isinstance(raw.get("grants", []) or [], list):
         raise ValueError("grants must be a list (parsed, no semantics yet)")
     if not isinstance(raw.get("report_channels", {}) or {}, dict):
@@ -413,9 +433,20 @@ class Verdict:
     channel_class: str | None = None
     approval: str | None = None
     mode: str | None = None
+    # Detail fields of the refusal reason, as lists (`check_missing`: `needed` / `provided`, v1.12) — the
+    # faces render them like Slack's own `needed` / `provided` (formatters.error_fields), before the message.
+    details: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def fields(self) -> str:
+        """`needed: a · provided: b` for the reported refusal; '' when it carries none."""
+        if not self.details:
+            return ""
+        from atlas_slack.formatters import error_fields
+        return error_fields(self.details)
 
 
 @dataclass
@@ -428,18 +459,23 @@ class _Ctx:
     effect: Effect
     reasons: list = field(default_factory=list)   # (code, message)
     warnings: list = field(default_factory=list)
+    details: dict = field(default_factory=dict)   # code → detail fields of that refusal
 
-    def refuse(self, code: str, msg: str) -> None:
+    def refuse(self, code: str, msg: str, details: dict | None = None) -> None:
         self.reasons.append((code, msg))
+        if details:
+            self.details.setdefault(code, details)
 
 
 def _base(ctx: _Ctx, decision: str, reason: str, message: str, **kw) -> Verdict:
+    # detail fields travel only with the refusal that is reported (an earlier reason wins the code)
+    details = dict(ctx.details.get(reason) or {}) if decision == REFUSE else {}
     return Verdict(
         decision=decision, reason=reason, message=message, method=ctx.method, row=ctx.effect.row,
         route=ctx.effect.route, transitional=ctx.effect.transitional,
         policy_version=ctx.policy.version, policy_digest=ctx.policy.digest, policy_state=ctx.policy.state,
         profile=ctx.profile.name, profile_source=ctx.profile.source,
-        reasons=[c for c, _ in ctx.reasons], warnings=list(ctx.warnings), **kw,
+        reasons=[c for c, _ in ctx.reasons], warnings=list(ctx.warnings), details=details, **kw,
     )
 
 
@@ -744,6 +780,7 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
         ctx.refuse("recipient_denied",
                    f"policy {policy.version}: {', '.join(sorted(denied))} is on the deny list for class {prov.cls} "
                    "— a human decision does not override it (invariant iii)")
+    _check_required(ctx, prov, channel)
 
     # ------------------------------------------------ journal-backed send rules (A5)
     if journal is None:
@@ -830,6 +867,53 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
     return _base(ctx, NEEDS_HUMAN, "human_decision", f"class {prov.cls}: a human decides this send", **extra)
 
 
+def check_satisfied(value) -> bool:
+    """A declared check counts when its value is true, a non-empty string that does not say it was not done
+    (`false`, `no`, `skip`, `fail`, …), or a non-empty object / list. Its content is never judged (A2)."""
+    if value is True:
+        return True
+    if isinstance(value, str):
+        s = value.strip().lower()
+        return bool(s) and s not in _CHECK_NEGATIVE
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    return False
+
+
+def _check_required(ctx: _Ctx, prov: Provenance, channel) -> None:
+    """`required_checks` (0.7.3): a policy refusal beside the deny lists — before any human decision is asked.
+
+    Applies to a core send of class X to anyone but the person (the target is not their bot DM). A name is
+    satisfied by a truthy `provenance.checks[name]`; `cicero` also by the door's own ledger lookup of
+    `provenance.comm_id` — the same lookup as the card's ✅ line, counted only when the text was compared and
+    equals the audited draft (a blocks-only or text-less send cannot be compared: declare the check instead).
+    """
+    profile = ctx.profile
+    required = (ctx.policy.data.get("required_checks") or {}).get(prov.cls) or []
+    if not required:
+        return
+    if profile.person_bot_dm_id and channel == profile.person_bot_dm_id:
+        return                                    # to the person: their own bot DM is not "to others"
+    checks = prov.checks if isinstance(prov.checks, dict) else {}
+    provided = sorted(k for k, v in checks.items() if isinstance(k, str) and check_satisfied(v))
+    needed = [n for n in required if n not in provided]
+    ledger_note = ""
+    if "cicero" in needed:
+        from atlas_slack import ledger
+        covered, ledger_note = ledger.audit_covers(profile, prov.comm_id, ledger.compared_text(ctx.method, ctx.params))
+        if covered:
+            needed.remove("cicero")
+            provided = sorted({*provided, "cicero"})
+    if not needed:
+        return
+    from atlas_slack.formatters import ERROR_HINTS
+    msg = (f"policy {ctx.policy.version} requires check(s) {', '.join(needed)} for class {prov.cls} to others "
+           f"— {ERROR_HINTS['check_missing']}")
+    if ledger_note:
+        msg += f" ({ledger_note})"
+    ctx.refuse("check_missing", msg, details={"needed": list(needed), "provided": provided})
+
+
 # --------------------------------------------------------------------------- rights
 
 _ROW_LABEL = {0: "0 read", 1: "1 message to others", 2: "2 report to the person", 4: "4 structure (open DM)"}
@@ -897,6 +981,11 @@ def rights_table(profile, policy: PolicyState | None = None, journal_ok: bool | 
             lines.append(f"  {cid} {e.get('name') or ''} class={e.get('class')} voices={','.join(e['voices'])} "
                          f"approval={e.get('approval') or '-'} " +
                          " ".join(f"{c}={e['modes'][c]}" for c in CLASSES))
+    req = {c: n for c, n in (policy.data.get("required_checks") or {}).items() if n}
+    if req:
+        lines.append("")
+        lines.append("required checks (core sends to others; the person's bot DM is exempt): "
+                     + " · ".join(f"{c}: {', '.join(req[c])}" for c in CLASSES if c in req))
     lines += ["", "Every write not listed above is transitional: today's gate (ask), flagged \"transitional\". "
               "username/icon_emoji/icon_url are refused on every send."]
     return "\n".join(lines)

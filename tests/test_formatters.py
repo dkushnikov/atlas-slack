@@ -49,11 +49,11 @@ class TestErrors:
         assert result == "Error: weird_thing"
 
     def test_hint_catalogue_contents(self):
-        # 5 starters (§10) + invalid_blocks (issue #1, 2026-08-21)
+        # 5 starters (§10) + invalid_blocks (issue #1, 2026-08-21) + check_missing (v1.12, required_checks)
         assert set(ERROR_HINTS) == {
             "channel_not_found", "not_in_channel",
             "missing_scope", "cannot_dm_bot", "is_archived",
-            "invalid_blocks",
+            "invalid_blocks", "check_missing",
         }
 
     # --- v1.11: Slack's own detail fields (`needed` / `provided`) travel with the error

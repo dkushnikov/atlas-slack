@@ -17,6 +17,8 @@ ERROR_HINTS: dict[str, str] = {
     "cannot_dm_bot": "Target is a bot account — DMs not supported.",
     "is_archived": "Channel is archived; unarchive first or pick another.",
     "invalid_blocks": "Per-block limits exceeded — section text caps at 3000 chars; split into multiple sections or pre-check with blocks.validate.",
+    # v1.12 (0.7.3): a context policy's `required_checks`; the door's refusal message leads with which ones and the class
+    "check_missing": "do the check, then declare it in provenance.checks.<name> (a short note of what was checked), or for cicero prepare the message through the ledger, whose audit must read pass for this exact text.",
 }
 
 # === List size caps per shape (§7) ===

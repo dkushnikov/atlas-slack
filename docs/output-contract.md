@@ -367,7 +367,7 @@ v1.1 additions:
 |-----------|--------|
 | Slack `ok=false` / `SlackApiError`, error code in hint catalogue | `Error: <error_code> — <hint>` |
 | Slack `ok=false` / `SlackApiError`, error code not in catalogue | `Error: <error_code>` |
-| Slack `ok=false` / `SlackApiError` with detail fields beside the code (v1.11: `needed`, `provided` — Slack sends them with `missing_scope`) | `Error: <error_code> — needed: <scope>[, …] · provided: <scope>, <scope>, … — <hint>` — the fields are facts and come first; the hint (or the caller's detail) follows; a field Slack did not send is not shown; comma lists are re-joined with `, ` and carried as Slack sent them (what several `needed` scopes mean is not documented by Slack). A core send renders them the same way, with ` — journal: op <op_id> error` last; `slack_download` on its `files.info` read too; the library face puts them on `DoorResult.error` (`<code> (error) — <fields>`) |
+| Slack `ok=false` / `SlackApiError` with detail fields beside the code (v1.11: `needed`, `provided` — Slack sends them with `missing_scope`) | `Error: <error_code> — needed: <scope>[, …] · provided: <scope>, <scope>, … — <hint>` — the fields are facts and come first; the hint (or the caller's detail) follows; a field Slack did not send is not shown; comma lists are re-joined with `, ` and carried as Slack sent them (what several `needed` scopes mean is not documented by Slack). A core send renders them the same way, with ` — journal: op <op_id> error` last; `slack_download` on its `files.info` read too; the library face puts them on `DoorResult.error` (`<code> (error) — <fields>`). The door's own `check_missing` refusal (v1.12) carries `needed` / `provided` in the same place: `Error: check_missing — needed: <check> · provided: <check>, … — <message>` |
 | Network/SDK exception (no Slack error code) | `Error: exception — <str(exception)>` |
 | Missing required params (caught early) | `Error: missing_params — <which>` |
 | Caller-supplied section block >3000 chars (v1.2, pre-flight) | `Error: invalid_blocks — blocks[<i>] section text is <n> chars ...` — refused before the API call; auto-split (§9) covers plain `text` only, never caller blocks |
@@ -398,6 +398,7 @@ Raised as `ToolError` like every row above, text `Error: <code> — <message>`. 
 | `prepared_at_future` | caller `prepared_at`, or the journal's first sighting, is > 60 s in the future |
 | `not_enabled_by_policy` | the class is off for that channel (built-in strict: B-a, C1, C2) |
 | `recipient_denied` | channel or a declared recipient is on the policy deny list for the class |
+| `check_missing` | v1.12 — the policy's `required_checks` for the class name a check the send does not carry (a core send to others; the person's bot DM is exempt): `provenance.checks.<name>` absent or saying it was not done, and for `cicero` no plain ✅ from the ledger behind `comm_id`; detail fields `needed` / `provided` before the message; a human decision does not override it |
 | `voice_mismatch` / `prepared_as_human_bot_voice` | provenance voice ≠ token voice or ≠ the class's voice / prepared-as-human in the bot voice |
 | `target_mismatch` | `provenance.target.channel` ≠ `params.channel` |
 | `provenance_invalid` | provenance fails the schema (unknown fields, bad class, ...) |
@@ -439,6 +440,7 @@ ERROR_HINTS = {
     "cannot_dm_bot":     "Target is a bot account — DMs not supported.",
     "is_archived":       "Channel is archived; unarchive first or pick another.",
     "invalid_blocks":    "Per-block limits exceeded — section text caps at 3000 chars; split into multiple sections or pre-check with blocks.validate.",  # v1.1
+    "check_missing":     "do the check, then declare it in provenance.checks.<name> (a short note of what was checked), or for cicero prepare the message through the ledger, whose audit must read pass for this exact text.",  # v1.12
 }
 ```
 

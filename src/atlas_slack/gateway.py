@@ -264,7 +264,8 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
     verdict = evaluate(method, call_params, as_bot, None, profile, load_policy(profile), face="mcp")
     if verdict.decision == REFUSE:
         core.record_call(profile, method, "refused", as_bot=as_bot, caller="mcp", error_code=verdict.reason)
-        raise _slack_error(verdict.reason, verdict.message + (" (transitional path)" if verdict.transitional else ""))
+        raise _slack_error(verdict.reason, verdict.message + (" (transitional path)" if verdict.transitional else ""),
+                           fields=verdict.fields)
     extra: list[str] = []
     t0 = time.monotonic()
     observed = False
@@ -410,7 +411,7 @@ def _core_send(method: str, params: dict, as_bot: bool, provenance: dict | None,
         return core.execute_send(method, params, as_bot, provenance, profile=profile, transport=transport,
                                  face="mcp", caller=(provenance or {}).get("prepared_by") or "mcp")
     except core.Refused as e:
-        raise _slack_error(e.code, e.message) from e
+        raise _slack_error(e.code, e.message, fields=e.fields) from e      # `needed` / `provided` on check_missing
     except core.SendFailed as e:
         if e.outcome == "unknown":
             raise _slack_error("outcome_unknown", f"{e.detail}") from e

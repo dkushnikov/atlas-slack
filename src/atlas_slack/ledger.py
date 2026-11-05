@@ -11,6 +11,9 @@ ritual re-audits and appends the new draft.
 
 Informational only: no ledger, no directory, an unreadable file — a ⚠ line on the
 card, never a refusal (owner's decision, 2026-10-31: the ledger must not become a dependency).
+A context policy may require the check `cicero` (`required_checks`, 0.7.3): that refusal is the
+policy's, and the ledger is one way to satisfy it — a plain ✅ here counts (`audit_covers`); the
+other way is the caller's own `provenance.checks.cicero`, so a host without a ledger is never stuck.
 
 Several ledger folders may be named, `os.pathsep`-separated (one context's door may read
 another context's ledger: a comm drafted there is sent through this one).
@@ -206,6 +209,55 @@ _T = {
 }
 
 
+def _assess(profile, comm_id: str | None, text: str | None, lang: str) -> tuple[str | None, list[str]]:
+    """The state key of the ledger line and the lines in `lang`; (None, []) when no ledger dir or no comm_id.
+
+    The one place that decides ✅ / ☑ / ⚠: the card (`prompt_lines`) and the policy's `required_checks`
+    (`audit_covers`) read the same key, so the card and the gate cannot drift apart.
+    """
+    t = _T.get(lang, _T["en"])
+    try:
+        dirs = ledger_dirs(profile)
+        if not dirs or not comm_id:
+            return None, []
+        if not any(d.is_dir() for d in dirs):
+            return "unavailable", [t["unavailable"]]
+        entry = find_ledger(dirs, comm_id)
+    except Exception:            # never let a ledger quirk reach the hook (a `~user` path, a bad fs)
+        return "unread", [t["unread"].format(comm=comm_id)]
+    if entry is None:
+        return "not_found", [t["not_found"].format(comm=comm_id)]
+    name = Path(entry.path).name
+    if entry.duplicates:
+        name += t["dup"].format(n=entry.duplicates)
+    state = entry.audit_state
+    when = f" {entry.audit_at}" if entry.audit_at else ""
+    v = dict(name=name, when=when, audit=entry.audit, comm=comm_id)
+    if (entry.status or "").lower() == "dropped":
+        key = "dropped"
+    elif state == "passed":
+        if text == "":
+            key = "pass_blocks"        # a blocks-only send carries no plain text to compare
+        elif text is None:
+            key = "pass_unbound"
+        elif entry.draft is None:
+            key = "pass_no_draft"
+        elif entry.text_matches(text) is False:
+            key = "pass_other_text"
+        else:
+            key = "pass"
+    elif state == "skipped":
+        key = "skipped"
+    elif state == "other":
+        key = "other"
+    else:
+        key = "none"
+    lines = [t[key].format(**v)]
+    if entry.intention:
+        lines.append(f"intention: {entry.intention}")
+    return key, lines
+
+
 def prompt_lines(profile, comm_id: str | None, text: str | None = None) -> list[str]:
     """Lines for the approval prompt: `ledger: …` and `intention: …`; [] when no ledger dir is set.
 
@@ -214,43 +266,33 @@ def prompt_lines(profile, comm_id: str | None, text: str | None = None) -> list[
     Wording follows the profile language; the shape `ledger: <✅|☑|⚠> <text> · <file>` is fixed
     (the approval-card mod parses it).
     """
-    t = _T.get(getattr(profile, "language", "en"), _T["en"])
+    return _assess(profile, comm_id, text, getattr(profile, "language", "en"))[1]
+
+
+def compared_text(method: str, params: dict) -> str | None:
+    """The text the card shows and the ledger compares: `initial_comment` for an upload, `text` otherwise;
+    '' when caller `blocks` are present (the recipient reads the blocks — not compared), None when absent."""
+    params = params if isinstance(params, dict) else {}
+    if isinstance(params.get("blocks"), list) and params["blocks"]:
+        return ""
+    v = params.get("initial_comment" if method == "files.uploadV2" else "text")
+    return v if isinstance(v, str) else None
+
+
+def audit_covers(profile, comm_id: str | None, text: str | None) -> tuple[bool, str]:
+    """(covered, note) for the policy check `cicero` (`required_checks`, 0.7.3).
+
+    Covered only on the card's plain `✅ Cicero audit` state: `audit: pass`, not dropped, and the text being
+    sent equals the last `## Draft` section. The «not compared» ✅ variants (blocks-only, no text) do not
+    cover it — the ledger cannot vouch for a text it did not compare. The note (English, for the refusal
+    message) says what the ledger showed. Never raises.
+    """
+    if not comm_id:
+        return False, "ledger: not consulted — the send carries no provenance.comm_id"
     try:
-        dirs = ledger_dirs(profile)
-        if not dirs or not comm_id:
-            return []
-        if not any(d.is_dir() for d in dirs):
-            return [t["unavailable"]]
-        entry = find_ledger(dirs, comm_id)
-    except Exception:            # never let a ledger quirk reach the hook (a `~user` path, a bad fs)
-        return [t["unread"].format(comm=comm_id)]
-    if entry is None:
-        return [t["not_found"].format(comm=comm_id)]
-    name = Path(entry.path).name
-    if entry.duplicates:
-        name += t["dup"].format(n=entry.duplicates)
-    state = entry.audit_state
-    when = f" {entry.audit_at}" if entry.audit_at else ""
-    v = dict(name=name, when=when, audit=entry.audit, comm=comm_id)
-    if (entry.status or "").lower() == "dropped":
-        lines = [t["dropped"].format(**v)]
-    elif state == "passed":
-        if text == "":
-            lines = [t["pass_blocks"].format(**v)]       # a blocks-only send carries no plain text to compare
-        elif text is None:
-            lines = [t["pass_unbound"].format(**v)]
-        elif entry.draft is None:
-            lines = [t["pass_no_draft"].format(**v)]
-        elif entry.text_matches(text) is False:
-            lines = [t["pass_other_text"].format(**v)]
-        else:
-            lines = [t["pass"].format(**v)]
-    elif state == "skipped":
-        lines = [t["skipped"].format(**v)]
-    elif state == "other":
-        lines = [t["other"].format(**v)]
-    else:
-        lines = [t["none"].format(**v)]
-    if entry.intention:
-        lines.append(f"intention: {entry.intention}")
-    return lines
+        if not ledger_dirs(profile):
+            return False, f"ledger: no ledger folder configured (profile ledger_dir / {ENV_LEDGER_DIR})"
+        key, lines = _assess(profile, comm_id, text, "en")
+    except Exception as e:  # noqa: BLE001
+        return False, f"ledger: not read ({type(e).__name__})"
+    return key == "pass", (lines[0] if lines else "")

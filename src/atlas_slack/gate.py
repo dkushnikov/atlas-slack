@@ -254,7 +254,8 @@ def hook_output(data: dict, profile=None, prior_reader=None) -> dict:
         # journal it (3 days of 0.5.0: eight provenance_invalid refusals, none in the journal).
         _journal_refusal(profile, journal, method, as_bot, v.reason)
         tag = " (transitional)" if v.transitional else ""
-        return _emit("deny", f"atlas-slack refused{tag} — {v.reason}: {v.message}")
+        fields = v.fields                       # `needed: … · provided: …` on check_missing (v1.12), as on the server
+        return _emit("deny", f"atlas-slack refused{tag} — {v.reason}: " + (f"{fields} — " if fields else "") + v.message)
     if v.route != "core":
         # the transitional reason carries no names and no language; a non-default profile language rides
         # on a trailing `lang:` line so the card (hooks/approval.tsx) can follow the profile before any core card
