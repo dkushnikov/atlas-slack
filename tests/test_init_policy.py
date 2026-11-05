@@ -162,6 +162,72 @@ def test_a_flow_mapping_profile_is_rewritten_as_a_whole(cfg, tmp_path, capsys):
     assert yaml.safe_load(text) == {"workspace_id": WS, "bot_user_id": BOT, "policy_path": str(pol)}
 
 
+def test_a_symlinked_profile_is_written_through(cfg, tmp_path, capsys):
+    real_dir = tmp_path / "elsewhere"
+    real_dir.mkdir()
+    real = profile_file(real_dir)
+    link = cfg / "acme.yaml"
+    link.symlink_to(real)
+    pol = policy_file(tmp_path)
+    rc, _, err = run(capsys, "--profile", "acme", "--policy-path", str(pol), "--pin")
+    assert rc == 0, err
+    assert link.is_symlink() and link.resolve() == real.resolve()
+    assert yaml.safe_load(real.read_text())["policy_sha256"] == sha(pol)
+    assert load_profile("acme").policy_sha256 == sha(pol)
+
+
+def test_quoted_keys_are_replaced_not_duplicated(cfg, tmp_path, capsys):
+    old = policy_file(tmp_path, name="old.yaml")
+    new = policy_file(tmp_path, POLICY.replace(".1", ".2"), name="new.yaml")
+    prof = profile_file(cfg, body=HEADER + f'"policy_path": "{old}"\n' + f"'policy_sha256': '{'0' * 64}'\n"
+                        + yaml.safe_dump(IDS, sort_keys=False))
+    rc, _, err = run(capsys, "--profile", "acme", "--policy-path", str(new), "--pin")
+    assert rc == 0, err
+    text = prof.read_text()
+    assert text.count("policy_path") == 1 and text.count("policy_sha256") == 1 and text.startswith(HEADER)
+    assert yaml.safe_load(text) == {**IDS, "policy_path": str(new), "policy_sha256": sha(new)}
+
+
+def test_an_unmatched_key_spelling_falls_back_to_a_whole_rewrite(cfg, tmp_path, capsys):
+    pol = policy_file(tmp_path)
+    prof = profile_file(cfg, body=HEADER + f"? policy_path\n: /old/p.yaml\nworkspace_id: {WS}\n")
+    rc, _, err = run(capsys, "--profile", "acme", "--policy-path", str(pol))
+    assert rc == 0 and "rewritten as a whole" in err
+    text = prof.read_text()
+    assert text.count("policy_path") == 1
+    assert yaml.safe_load(text) == {"workspace_id": WS, "policy_path": str(pol)}
+
+
+@pytest.mark.parametrize("damage", ["unparsable", "schema", "missing"])
+def test_no_pin_removes_a_bad_pin_even_when_the_policy_is_broken(cfg, tmp_path, capsys, damage):
+    """Removing the pin is the recovery path: it works on the profile's own policy file whatever its state."""
+    prof = profile_file(cfg)
+    pol = policy_file(tmp_path)
+    run(capsys, "--profile", "acme", "--policy-path", str(pol), "--pin")
+    if damage == "unparsable":
+        pol.write_text("version: [unclosed\n")
+    elif damage == "schema":
+        pol.write_text('version: "1"\nsurprise: 1\n')
+    else:
+        pol.unlink()
+    rc, out, err = run(capsys, "--profile", "acme", "--policy-path", str(pol), "--no-pin")
+    assert rc == 0, err
+    assert "policy_sha256" not in yaml.safe_load(prof.read_text())
+    assert out.startswith("policy: ✗ invalid — " if damage != "missing" else "policy: built-in strict — ")
+    assert out.rstrip().endswith(f"unpinned {pol}") and "pin removed" in err
+    assert load_policy(load_profile("acme")).state == ("invalid" if damage != "missing" else "builtin")
+
+
+def test_no_pin_on_a_new_broken_path_is_still_refused(cfg, tmp_path, capsys):
+    prof = profile_file(cfg)
+    good = policy_file(tmp_path)
+    run(capsys, "--profile", "acme", "--policy-path", str(good), "--pin")
+    bad = policy_file(tmp_path, "version: [unclosed\n", name="bad.yaml")
+    before = prof.read_bytes()
+    rc, _, err = run(capsys, "--profile", "acme", "--policy-path", str(bad), "--no-pin")
+    assert rc == 1 and "nothing written" in err and prof.read_bytes() == before
+
+
 # ------------------------------------------------------------------ refusals: nothing written
 
 @pytest.mark.parametrize("text,msg", [

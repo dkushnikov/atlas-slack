@@ -71,17 +71,19 @@ def _yaml_line(key: str, value) -> str:
 def _set_top_level(text: str, updates: dict) -> str:
     """Replace, add (at the end) or remove (value None) top-level `key: value` lines; every other line stays as it is.
 
-    A replaced key's continuation lines (indented) go with it. The caller re-parses the result and compares it
-    with the expected mapping — a file this line edit cannot handle falls back to a full rewrite.
+    A key may be quoted (`"policy_path":`); a replaced key's continuation lines (indented) go with it, and the
+    replacement is the plain `key: value` line (a comment on the replaced line is not kept). The caller
+    re-parses the result and compares it with the expected mapping — a file this line edit cannot handle
+    falls back to a full rewrite.
     """
     lines = text.splitlines(keepends=True)
     out: list[str] = []
     done: set[str] = set()
     i = 0
     while i < len(lines):
-        m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", lines[i])
-        if m and m.group(1) in updates:
-            key = m.group(1)
+        m = re.match(r"""(["']?)([A-Za-z_][A-Za-z0-9_]*)\1\s*:""", lines[i])
+        if m and m.group(2) in updates:
+            key = m.group(2)
             j = i + 1
             while j < len(lines) and lines[j].startswith((" ", "\t")):
                 j += 1
@@ -99,8 +101,11 @@ def _set_top_level(text: str, updates: dict) -> str:
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    """temp file in the same directory + rename: a hook reading the profile meanwhile sees the old or the new file."""
+    """temp file in the same directory + rename: a hook reading the profile meanwhile sees the old or the new file.
+
+    A symlinked profile is written through: the link's target is replaced, the link stays a link."""
     import stat
+    path = path.resolve()
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     tmp.write_text(text, encoding="utf-8")
     try:
@@ -163,10 +168,16 @@ def cmd_init_policy(args) -> int:
         return 2
     # the door's own loader decides: the same yaml.safe_load + validate_policy + digest a send uses
     st = load_policy(Profile(name=name, source="file", policy_path=str(expanded)))
-    if st.state == "builtin":
+    current = data.get("policy_path")
+    same_file = isinstance(current, str) and bool(current.strip()) and Path(current.strip()).expanduser() == expanded
+    # Removing a pin is the recovery path: `--no-pin` on the profile's own policy file is allowed even when that
+    # file is missing or does not validate — writes keep refusing policy_invalid (or fall to the built-in policy
+    # when the file is gone) until it is fixed, and the command says so. A NEW path always has to validate.
+    recovery = bool(args.no_pin and same_file and st.state != "file")
+    if st.state == "builtin" and not recovery:
         err(f"policy file missing: {expanded} — nothing written")
         return 1
-    if st.state == "invalid":
+    if st.state == "invalid" and not recovery:
         err(f"policy invalid: {st.error} — nothing written")
         return 1
     old_pin = data.get("policy_sha256")
@@ -191,6 +202,13 @@ def cmd_init_policy(args) -> int:
         same = yaml.safe_load(new_text) == expected
     except Exception:  # noqa: BLE001
         same = False
+    # a key spelled in a way the line edit did not match (`? policy_path`, flow style …) would survive as a
+    # duplicate — the parser keeps the last one, so the comparison above cannot see it. Any line beyond the ones
+    # written that names either key sends the file to the whole rewrite (a false alarm costs only the comments).
+    keys_left = sum(1 for ln in new_text.splitlines()
+                    if not ln.lstrip().startswith("#") and re.search(r"\bpolicy_(?:path|sha256)\b", ln))
+    if keys_left != (1 if pin is None else 2):
+        same = False
     if not same:
         # a layout the line edit cannot handle (flow mapping, a document marker …): rewrite the mapping, keep the header
         import itertools
@@ -203,13 +221,20 @@ def cmd_init_policy(args) -> int:
         _write_atomic(path, new_text)
         check = load_profile(name)
         back = load_policy(check)
-        if check.policy_path != str(expanded) or back.state != "file" or back.digest != st.digest:
+        if check.policy_path != str(expanded) or back.state != st.state or back.digest != st.digest:
             _write_atomic(path, text)                      # never leave a profile the door reads differently
             err(f"the written profile did not read back as intended ({back.state}: {back.error or back.note}) — "
                 f"restored {path} as it was")
             return 1
         if check.errors:
             err(f"note: the profile has other problems — doctor{pflag} shows them: {'; '.join(check.errors)}")
+    if recovery:
+        state = f"✗ invalid — {st.error}" if st.state == "invalid" else f"built-in strict — {st.note}"
+        print(f"policy: {state} · unpinned {given}")
+        err("pin removed; the policy file itself is " + ("still invalid — every write refuses policy_invalid until it is "
+            "fixed" if st.state == "invalid" else "missing — the built-in strict policy applies until it is back")
+            + f"; then init{pflag} --policy-path {given} --pin")
+        return 0
     print(policy_line(st, pin is not None, given))
     return 0
 
