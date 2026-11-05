@@ -469,6 +469,13 @@ class _Ctx:
             self.details.setdefault(code, details)
 
 
+def person_targets(profile) -> set:
+    """The channel ids that reach the person: their bot DM and their user id (a bot send addressed to it
+    lands in that DM — Slack opens it on the first post), each only when the profile sets it. Row 2 and
+    class C2 (`is_report`) and the `required_checks` exemption read this one set."""
+    return {x for x in (getattr(profile, "person_bot_dm_id", None), getattr(profile, "person_user_id", None)) if x}
+
+
 def _base(ctx: _Ctx, decision: str, reason: str, message: str, **kw) -> Verdict:
     # detail fields travel only with the refusal that is reported (an earlier reason wins the code)
     details = dict(ctx.details.get(reason) or {}) if decision == REFUSE else {}
@@ -750,11 +757,11 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
         ctx.refuse("token_unavailable", f"{profile.token_var(ctx.as_bot)} is not set — no "
                                         f"{'bot' if ctx.as_bot else 'person'} voice on this host (degraded mode)")
 
-    is_report = ctx.as_bot and bool(profile.person_bot_dm_id) and channel == profile.person_bot_dm_id
+    is_report = ctx.as_bot and channel in person_targets(profile)
     row = 2 if is_report else 1
     ctx.effect = Effect(row, "core", True)
     if prov.cls == "C2" and not is_report:
-        ctx.refuse("c2_not_to_person", "class C2 talks only to the person (their bot DM) — invariant (ii)")
+        ctx.refuse("c2_not_to_person", "class C2 talks only to the person (their bot DM or their user id) — invariant (ii)")
 
     if prov.cls in ("B-a", "C1"):
         if prov.synthesized:
@@ -899,8 +906,7 @@ def _check_required(ctx: _Ctx, prov: Provenance, channel) -> None:
     required = (ctx.policy.data.get("required_checks") or {}).get(prov.cls) or []
     if not required:
         return
-    to_person = {x for x in (profile.person_bot_dm_id, profile.person_user_id) if x}
-    if channel in to_person:
+    if channel in person_targets(profile):
         return                                    # to the person: their bot DM, or their user id (opens it)
     checks = prov.checks if isinstance(prov.checks, dict) else {}
     # only names a policy could require count, and are shown: a caller's odd keys never reach the reason text

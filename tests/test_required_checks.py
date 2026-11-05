@@ -352,3 +352,38 @@ def test_rights_table_lists_the_required_checks(env):
             "A: cicero, recipient · B-h: cicero") in table
     env.policy(POLICY_REQ.replace("A: [cicero]", "A: []"))
     assert "required checks" not in rights(env.profile)
+
+
+# ------------------------------------------------------------------ one definition of "to the person" (row 2, C2)
+
+def test_the_persons_user_id_is_a_report_like_the_bot_dm(env):
+    me, dm = env.ids["person_user_id"], env.ids["person_bot_dm_id"]
+    assert policy_mod.person_targets(env.profile) == {me, dm}
+    for ch, row in ((me, 2), (dm, 2), (CHANNEL, 1), ("U0SOMEONE1", 1)):
+        v = policy_mod.evaluate("chat.postMessage", {"channel": ch, "text": "x"}, True, {"cls": "B-h"}, env.profile,
+                                journal=env.journal)
+        assert v.row == row, (ch, v.row)
+    # the person's own voice to their user id is not a bot report (row 2 is the bot's); it is exempt from checks
+    v = policy_mod.evaluate("chat.postMessage", {"channel": me, "text": "x"}, False, {"cls": "A"}, env.profile,
+                            journal=env.journal)
+    assert v.row == 1
+
+
+def test_c2_may_report_to_the_persons_user_id_where_the_policy_enables_it(env, monkeypatch):
+    me = env.ids["person_user_id"]
+    env.policy(f'version: "2026-11-05.4"\nchannels:\n  {me}:\n    class: dm\n    voices: [bot]\n    modes: {{C2: auto}}\n'
+               "required_checks:\n  C2: [cicero]\n")
+    monkeypatch.delenv(env.ids["token_sources"]["user"])          # a C2 job never holds the person's token
+    door = Door(transport=env.transport, manifest={"cls": "C2"})
+    res = door.call("chat.postMessage", {"channel": me, "text": "nightly report"}, as_bot=True,
+                    provenance={"cls": "C2", "comm_id": "20261105-c2c2"})
+    assert res.ok and res.verdict.reason == "policy_auto" and res.verdict.row == 2   # to the person: no check needed
+    res = door.call("chat.postMessage", {"channel": CHANNEL, "text": "x"}, as_bot=True, provenance={"cls": "C2"})
+    assert res.verdict.reason == "c2_not_to_person"
+    env.fields.pop("person_user_id")
+    env.write()
+    res = door.call("chat.postMessage", {"channel": me, "text": "again"}, as_bot=True,
+                    provenance={"cls": "C2", "comm_id": "20261105-c2c3"})
+    assert res.verdict.reason == "c2_not_to_person"               # without the id in the profile it is someone else
+    assert len(env.transport.calls) == 1
+
