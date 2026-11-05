@@ -253,9 +253,11 @@ _POLICY_KEYS = set(STRICT_POLICY) | {"required_checks"}
 _CHANNEL_KEYS = {"class", "voices", "approval", "modes", "name"}
 # A check name is a key of provenance.checks; no comma or space, so `needed: a, b` stays unambiguous.
 _CHECK_NAME_RE = __import__("re").compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
-# A declared value that says the check was NOT done does not satisfy it (the ledger's skip counts as
-# no pass too). Everything else non-empty is the context's claim — shown, never judged (A2).
+# The exhaustive rule for a declared check (check_satisfied): true; a non-empty string that is not one of
+# these words (compared trimmed, case-insensitive); a non-empty object or list. Nothing else — numbers
+# included. The door never reads the value beyond that (A2).
 _CHECK_NEGATIVE = frozenset({"false", "no", "none", "null", "0", "fail", "failed", "skip", "skipped", "n/a"})
+PROVIDED_MAX = 12          # `provided` lists at most this many names: the reason a caller reads stays bounded
 
 
 def _digest_bytes(b: bytes) -> str:
@@ -868,8 +870,11 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
 
 
 def check_satisfied(value) -> bool:
-    """A declared check counts when its value is true, a non-empty string that does not say it was not done
-    (`false`, `no`, `skip`, `fail`, …), or a non-empty object / list. Its content is never judged (A2)."""
+    """The exhaustive rule: `True`; a non-empty string whose trimmed, lower-cased form is not one of
+    `_CHECK_NEGATIVE` (false, no, none, null, 0, fail, failed, skip, skipped, n/a); a non-empty dict or list.
+    Anything else is not satisfied — `False`, `None`, numbers, an empty string / object / list. The door does
+    not judge the content (A2): a declaration with no check behind it is the caller's false claim, and the
+    journal keeps it (`provenance.checks` is stored on the op row)."""
     if value is True:
         return True
     if isinstance(value, str):
@@ -883,7 +888,9 @@ def check_satisfied(value) -> bool:
 def _check_required(ctx: _Ctx, prov: Provenance, channel) -> None:
     """`required_checks` (0.7.3): a policy refusal beside the deny lists — before any human decision is asked.
 
-    Applies to a core send of class X to anyone but the person (the target is not their bot DM). A name is
+    Applies to a core send of class X to anyone but the person: the target is neither their bot DM
+    (`person_bot_dm_id`) nor their user id (`person_user_id` — a bot send that opens the DM), each only when the
+    profile sets it. A name is
     satisfied by a truthy `provenance.checks[name]`; `cicero` also by the door's own ledger lookup of
     `provenance.comm_id` — the same lookup as the card's ✅ line, counted only when the text was compared and
     equals the audited draft (a blocks-only or text-less send cannot be compared: declare the check instead).
@@ -892,20 +899,23 @@ def _check_required(ctx: _Ctx, prov: Provenance, channel) -> None:
     required = (ctx.policy.data.get("required_checks") or {}).get(prov.cls) or []
     if not required:
         return
-    if profile.person_bot_dm_id and channel == profile.person_bot_dm_id:
-        return                                    # to the person: their own bot DM is not "to others"
+    to_person = {x for x in (profile.person_bot_dm_id, profile.person_user_id) if x}
+    if channel in to_person:
+        return                                    # to the person: their bot DM, or their user id (opens it)
     checks = prov.checks if isinstance(prov.checks, dict) else {}
-    provided = sorted(k for k, v in checks.items() if isinstance(k, str) and check_satisfied(v))
-    needed = [n for n in required if n not in provided]
+    # only names a policy could require count, and are shown: a caller's odd keys never reach the reason text
+    satisfied = {k for k, v in checks.items() if isinstance(k, str) and _CHECK_NAME_RE.fullmatch(k) and check_satisfied(v)}
+    needed = [n for n in required if n not in satisfied]
     ledger_note = ""
     if "cicero" in needed:
         from atlas_slack import ledger
         covered, ledger_note = ledger.audit_covers(profile, prov.comm_id, ledger.compared_text(ctx.method, ctx.params))
         if covered:
             needed.remove("cicero")
-            provided = sorted({*provided, "cicero"})
+            satisfied.add("cicero")
     if not needed:
         return
+    provided = sorted(satisfied)[:PROVIDED_MAX]
     from atlas_slack.formatters import ERROR_HINTS
     msg = (f"policy {ctx.policy.version} requires check(s) {', '.join(needed)} for class {prov.cls} to others "
            f"— {ERROR_HINTS['check_missing']}")
@@ -984,7 +994,7 @@ def rights_table(profile, policy: PolicyState | None = None, journal_ok: bool | 
     req = {c: n for c, n in (policy.data.get("required_checks") or {}).items() if n}
     if req:
         lines.append("")
-        lines.append("required checks (core sends to others; the person's bot DM is exempt): "
+        lines.append("required checks (core sends to others; the person's bot DM and user id are exempt): "
                      + " · ".join(f"{c}: {', '.join(req[c])}" for c in CLASSES if c in req))
     lines += ["", "Every write not listed above is transitional: today's gate (ask), flagged \"transitional\". "
               "username/icon_emoji/icon_url are refused on every send."]

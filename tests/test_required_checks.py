@@ -280,15 +280,39 @@ def test_ledger_satisfies_an_upload_comment(env, tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ scope of the rule
 
-def test_the_persons_bot_dm_is_exempt(env):
+def test_the_persons_bot_dm_and_user_id_are_exempt(env):
     env.policy(POLICY_TWO)
-    dm = env.ids["person_bot_dm_id"]
-    env.send(env.approve(post(channel=dm)))                       # B-h to the person: no check needed
-    assert len(env.transport.calls) == 1
+    dm, me = env.ids["person_bot_dm_id"], env.ids["person_user_id"]
+    env.send(env.approve(post(channel=dm)))                       # B-h to the person's bot DM: no check needed
+    env.send(env.approve(post(channel=me, text="first hello")))  # B-h to the person's user id (opens the DM)
+    env.send(env.approve(person(channel=me, text="a note to self")))   # A to the person's user id
+    assert len(env.transport.calls) == 3
     refused(env, post(channel=CHANNEL), "check_missing")          # B-h to others: cicero needed
+    refused(env, post(channel="U0SOMEONE1"), "check_missing")     # another user id is "others"
+    refused(env, person(channel="U0SOMEONE1"), "check_missing")
     env.fields.pop("person_bot_dm_id")
     env.write()
-    refused(env, post(channel=dm), "check_missing")               # no bot DM in the profile: nothing is exempt
+    refused(env, post(channel=dm, text="again"), "check_missing")  # no bot DM id in the profile: that id is others
+    env.send(env.approve(post(channel=me, text="still me")))      # the user id still exempts
+    env.fields.pop("person_user_id")
+    env.write()
+    refused(env, post(channel=me, text="who"), "check_missing")   # neither id in the profile: nothing is exempt
+    assert len(env.transport.calls) == 4
+
+
+def test_provided_is_bounded_and_lists_only_check_names(env):
+    env.policy(POLICY_REQ)
+    checks = {f"check{i:02d}": "done" for i in range(20)}
+    checks.update({"two words": "x", "a,b": "y", "x" * 70: "z", "ok-name": "pass"})
+    e = refused(env, person(checks=checks), "check_missing")
+    provided = e.verdict.details["provided"]
+    assert len(provided) == policy_mod.PROVIDED_MAX == 12
+    assert all(policy_mod._CHECK_NAME_RE.fullmatch(n) for n in provided)
+    assert "two words" not in e.fields and "a,b" not in e.fields and "x" * 70 not in e.fields
+    assert e.verdict.details["needed"] == ["cicero"]
+    # a key a policy could never require never satisfies a required name either
+    env.policy('version: "1"\nrequired_checks: {A: [ok-name]}\n')
+    env.send(env.approve(person(checks={"ok-name": "done"}, comm_id="20261105-0f0f")))
     assert len(env.transport.calls) == 1
 
 
@@ -324,6 +348,7 @@ def test_every_core_send_is_covered(env, method, params):
 def test_rights_table_lists_the_required_checks(env):
     env.policy(POLICY_TWO)
     table = rights(env.profile)
-    assert "required checks (core sends to others; the person's bot DM is exempt): A: cicero, recipient · B-h: cicero" in table
+    assert ("required checks (core sends to others; the person's bot DM and user id are exempt): "
+            "A: cicero, recipient · B-h: cicero") in table
     env.policy(POLICY_REQ.replace("A: [cicero]", "A: []"))
     assert "required checks" not in rights(env.profile)

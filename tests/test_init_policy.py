@@ -245,7 +245,7 @@ def test_doctor_prints_the_policy_line(cfg, tmp_path, capsys, monkeypatch):
     run(capsys, "--profile", "acme", "--policy-path", str(pol), "--pin")
     rc, out, nxt = _doctor(capsys, monkeypatch, "--profile", "acme")
     assert f"policy: 2026-11-05.1 sha256 {sha(pol)[:12]} pinned {pol} · valid" in out
-    assert "required checks (core sends to others; the person's bot DM is exempt): A: cicero" in out
+    assert "required checks (core sends to others; the person's bot DM and user id are exempt): A: cicero" in out
     assert nxt.startswith("next: send")
     pol.write_text(POLICY + "# edited\n")
     rc, out, nxt = _doctor(capsys, monkeypatch, "--profile", "acme")
