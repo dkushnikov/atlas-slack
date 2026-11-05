@@ -146,9 +146,9 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
     # The ledger behind the comm_id: the audit pass as a fact the door read, not a claim (0.5.2).
     from atlas_slack import ledger
     try:
-        # with caller blocks the recipient reads the blocks, not `text`: the ledger match is not a ✅
-        compared = "" if isinstance(params.get("blocks"), list) and params["blocks"] else (text if isinstance(text, str) else None)
-        lines.extend(ledger.prompt_lines(profile, p.get("comm_id"), compared))
+        # with caller blocks the recipient reads the blocks, not `text`: not compared; an upload compares its
+        # initial_comment — the same function core (ledger_at_send) and the policy's `cicero` check use
+        lines.extend(ledger.prompt_lines(profile, p.get("comm_id"), ledger.compared_text(v.method, params)))
     except Exception:            # the ledger line is a courtesy; the prompt must always be issued
         lines.append(t["ledger_unread"])
     names.save()

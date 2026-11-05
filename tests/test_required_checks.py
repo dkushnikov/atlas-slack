@@ -387,3 +387,24 @@ def test_c2_may_report_to_the_persons_user_id_where_the_policy_enables_it(env, m
     assert res.verdict.reason == "c2_not_to_person"               # without the id in the profile it is someone else
     assert len(env.transport.calls) == 1
 
+
+# ------------------------------------------------------------------ one compared text: card, op row, check
+
+def test_an_uploads_op_row_records_the_ledger_line_for_its_comment(env, tmp_path, monkeypatch):
+    import json
+    from test_v2_slice2 import Slack, upload
+    (tmp_path / "ledger").mkdir()
+    monkeypatch.setenv(ledger.ENV_LEDGER_DIR, str(tmp_path / "ledger"))
+    ledger_file(tmp_path / "ledger", "u.md", "20261105-up01", text="see attached")
+    env.transport = Slack()
+    ti = upload(tmp_path, comment="see attached")
+    ti["provenance"]["comm_id"] = "20261105-up01"
+    out = env.hook(ti)
+    assert out["permissionDecision"] == "ask"
+    assert "ledger: ✅ Cicero audit · u.md" in out["permissionDecisionReason"]         # the card
+    res = env.send(out["updatedInput"])
+    prov = json.loads(env.journal.get_op(res.op_id)["provenance_json"])
+    assert prov["ledger_at_send"] == ["ledger: ✅ Cicero audit · u.md"]               # the op row compares the same text
+    assert ledger.compared_text("files.uploadV2", ti["params"]) == "see attached"      # what the check compares
+    assert ledger.compared_text("chat.postMessage", {"text": "t", "blocks": [{"type": "divider"}]}) == ""
+    assert ledger.compared_text("files.uploadV2", {"file": "/x"}) is None

@@ -279,9 +279,8 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
     # send, hence the name (MC session finding 2026-10-31; verifier). A failed recompute is recorded too.
     try:
         from atlas_slack import ledger as _ledger
-        compared = "" if isinstance(params.get("blocks"), list) and params["blocks"] else (
-            params.get("text") if isinstance(params.get("text"), str) else None)
-        shown = _ledger.prompt_lines(profile, prov.comm_id, compared)
+        # the same text the card and the policy's `cicero` check compare (an upload: initial_comment) — one function
+        shown = _ledger.prompt_lines(profile, prov.comm_id, _ledger.compared_text(method, params))
         if shown:
             stored_prov["ledger_at_send"] = shown
     except Exception as e:  # noqa: BLE001
