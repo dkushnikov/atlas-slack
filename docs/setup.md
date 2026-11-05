@@ -63,6 +63,15 @@ python3 -m atlas_slack init                          # → ~/.config/atlas-slack
 
 Several profiles: `init --profile acme --user-var ACME_SLACK_USER --bot-var ACME_SLACK_BOT` writes `acme.yaml` with those variable names as its `token_sources` (a non-default profile that names no variables — in the options or in its file's `token_sources` — is refused, and so is one option alone: it would read the other token from the first app's variable; a profile that really shares the default tokens says so with `--user-var SLACK_USER_TOKEN --bot-var SLACK_BOT_TOKEN`, and the file then declares them). Variable names are upper-case letters, digits and underscores. Check it with `doctor --profile acme`, then select it with `ATLAS_SLACK_PROFILE=acme` in the environment Claude Code runs in — a project's `.claude/settings.json` → `"env"` is the usual place. The hook and the MCP server must see the same value; a divergence refuses `profile_mismatch`. Everything else the profile can hold — a policy file and its sha256 pin, `freeze`, `language`, display names — is in [`policy-schema.md`](policy-schema.md).
 
+A context policy is attached to an existing profile by `init` too, without tokens or network (0.7.3):
+
+```bash
+python3 -m atlas_slack init --profile acme --policy-path ~/work/acme/.claude/atlas-slack.policy.yaml --pin
+# policy: 2026-11-05.1 sha256 3b6c0e1f9a2d pinned ~/work/acme/.claude/atlas-slack.policy.yaml
+```
+
+It loads and validates the file first — a missing or invalid policy exits non-zero and writes nothing — then writes `policy_path` as given (absolute or `~/…`) and leaves every other key and line of the profile as it is. `--pin` also writes the file's sha256 as `policy_sha256`; `--no-pin` removes the pin. After you edit a pinned policy, the old pin no longer matches and every send refuses `policy_invalid`: run the same command with `--pin` once you have read the new version (without `--pin` or `--no-pin`, `init` refuses to keep a pin that no longer matches). It does not combine with `--force` or the variable options — identity first, then the policy. `doctor` shows the result as a `policy:` line: version, sha256, pinned or unpinned, the path, valid or the loader's error.
+
 ## 5. Check
 
 ```bash
@@ -110,7 +119,8 @@ Your journal is now `~/.local/share/atlas-slack/default/journal.sqlite`; `slack_
 | `attribution_unavailable` | the profile has no `bot_user_id` | `init --force` (identity fields only), or set it by hand |
 | `version_skew` | the MCP server runs another plugin version than the hook that approved the send (after an update) | restart the session |
 | `frozen` | the profile says `freeze: true` | your emergency stop; `freeze: false` lifts it |
-| `policy_invalid` | the policy file does not parse, breaks the schema, or its sha256 differs from the profile's pin | fix the file or re-pin it (`docs/policy-schema.md`); `doctor` says `fix-policy` |
+| `policy_invalid` | the policy file does not parse, breaks the schema, or its sha256 differs from the profile's pin | fix the file, or re-pin it after reading it: `init --profile <name> --policy-path <path> --pin` (§ 4); `doctor` says `fix-policy` |
+| `check_missing — needed: <check> · provided: …` | your policy's `required_checks` asks a message of this class to others to carry a check the send did not declare (0.7.3); `needed` names it, `provided` lists the checks that were there | the agent does the check and declares it in the send's `provenance.checks`, or for `cicero` prepares the message through your ledger; the bot DM to you is exempt; nothing was sent |
 | `journal_unavailable` | the journal directory is unwritable | fix permissions on `~/.local/share/atlas-slack/<profile>/` |
 | `decision_expired` | the card waited more than 30 minutes | ask again — nothing was sent |
 | `outcome_unknown` | Slack's answer was lost | the agent runs `_reconcile`; never a blind retry |

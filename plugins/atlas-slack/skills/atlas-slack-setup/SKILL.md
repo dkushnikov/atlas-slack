@@ -17,6 +17,7 @@ The person does the Slack side (a browser, their account); you do the local side
 - Never call Slack with `curl` or the SDK directly. The checks are `doctor` and `init`; a read or a send in a session goes through `slack_api`.
 - Say only what a command printed. Every claim about the person's setup comes from `doctor`, `init`, `claude plugin list` or the import check.
 - `init --force` rewrites the four identity fields (`workspace_id`, `person_user_id`, `bot_user_id`, `person_bot_dm_id`), rewrites `token_sources` when `--user-var`/`--bot-var` are given, adds `language: en` when absent, and keeps every other key; comments in the file are not kept. Before you run it, say what it rewrites. Run it only when `doctor`'s `next:` line names it, when step 4 names it, or when the person asks.
+- `init --policy-path <path> [--pin | --no-pin]` attaches the person's policy file to an existing profile and touches nothing else (no tokens, no network; an invalid file or a stale pin writes nothing). Never edit the profile file by hand to set `policy_path` or `policy_sha256` — this command does it, after the person named the file.
 
 ## Step 0 — the environment
 
@@ -51,7 +52,7 @@ Read the whole output to the person in one or two sentences (which profile, both
 | `decide — …` | the token and the profile disagree: ask the person which is right, then do the half of the line that applies (the `init … --force` the line names for the token — `<VAR>` placeholders: the person names the two variables, step 3; a fresh variable for the profile) |
 | `add-scope — <VAR>: …` | the app lacks a scope the first session uses: the person adds the named scope(s) under OAuth & Permissions → Scopes, reinstalls (the tokens change), updates the variable → step 3's «new terminal» part |
 | `frozen — …` | the person's emergency stop. Say so. If they want it lifted, the person sets `freeze: false` in the file; otherwise stop here |
-| `fix-policy — …` / `fix-journal — …` | quote the line; the fix is in the file or directory it names |
+| `fix-policy — …` / `fix-journal — …` | quote the line; the fix is in the file or directory it names. A stale pin (`sha256 mismatch`) after the person edited the policy: the line names `init --profile <name> --policy-path <path> --pin` — run it only after the person says the new version is theirs (the pin is their ratification) |
 | `send — …` | consistent, with the channel for the first message: step 4 — a `· scopes: unknown` line under a token line means the first-session scopes were not checked (no scope header from Slack): say so, it is not a pass — unless the hello was already sent and the line names the bot DM: then the setup is done, no second hello. If `·` lines under the token lines said fields are unset (an env-only profile), the identity check compares only what is set — say so |
 
 After every fix, `doctor` again. A `✗` or `·` line that is not the `next:` line is context, not an instruction — mention it once (the `·` hygiene scopes `chat:write.customize` / `incoming-webhook`: suggest dropping them from the app).
