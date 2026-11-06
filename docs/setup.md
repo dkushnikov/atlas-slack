@@ -90,7 +90,7 @@ Two things the door adds to a message are yours to set once the profile exists. 
   python3 -m atlas_slack init --set cc_label=fyi               # the word before the mention; cc_label= leaves the mention alone
   ```
 
-  Never in your own DM with the agent, never on an ephemeral or a stream, and not when the text already mentions you. A label is one line of at most 60 characters; a value the loader refuses writes nothing.
+  Never in your own DM with the agent, never on an ephemeral or a stream, and not when the text already mentions you. In a thread, only while you do not follow it yet — you wrote the parent, replied in it, or are mentioned in the parent (the agent's own earlier cc in that thread counts); the door reads the parent at most once before the reply. An edit keeps what the message had. A label is one line of at most 60 characters; a value the loader refuses writes nothing.
 
 ## 5. Check
 

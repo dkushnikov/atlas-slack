@@ -16,11 +16,11 @@ Slack for one person and their agent, with a decision per operation: one gateway
 Two tokens, two voices:
 
 - `SLACK_USER_TOKEN` (`xoxp-`) — reads (search, history, profiles, DMs) and sends **in the person's voice**: the message carries a `💙 Sent via <bot>` context block so the recipient sees the agent took part (the label is the profile's `attribution_label`, 0.8.0).
-- `SLACK_BOT_TOKEN` (`xoxb-`) — sends **in the bot's voice** (the bot is the author on record), reactions, pins. With `cc_person: true` in the profile a bot-voice message send to others ends with `cc <@person>` — the mention subscribes the person to the thread (0.8.0); never in the person's own DM.
+- `SLACK_BOT_TOKEN` (`xoxb-`) — sends **in the bot's voice** (the bot is the author on record), reactions, pins. With `cc_person: true` in the profile a bot-voice message send to others ends with `cc <@person>` — the mention subscribes the person to the thread (0.8.0); never in the person's own DM; a thread reply only while the person does not follow the thread (`follow.py`, 0.8.1), an edit keeps what the original had.
 
 The attributed bot id comes from the profile (`bot_user_id`) — there is no workspace literal in code.
 
-The door (`src/atlas_slack/`): `policy.py` (effect registry, sender classes, invariants, verdicts) → `provenance.py` → `decision.py` (one-time token bound to the exact operation) → `journal.py` (SQLite write-ahead) → transport. Faces: `gateway.py` (MCP), `door.py` (library `Door` for jobs), `gate.py` (the hook's verdict + CLI). `identity.py` checks the tokens against the profile at the first write. `reconcile.py` resolves `unknown` outcomes by reading Slack. `shaping.py` / `formatters.py` are the transport layer (attribution, auto-split, output contract). Contracts: `docs/output-contract.md` (what the tools return), `docs/policy-schema.md` (profile, policy, provenance, decisions, journal).
+The door (`src/atlas_slack/`): `policy.py` (effect registry, sender classes, invariants, verdicts) → `provenance.py` → `decision.py` (one-time token bound to the exact operation) → `journal.py` (SQLite write-ahead) → transport. Faces: `gateway.py` (MCP), `door.py` (library `Door` for jobs), `gate.py` (the hook's verdict + CLI). `identity.py` checks the tokens against the profile at the first write. `follow.py` answers whether the person already follows a thread (the cc on a bot-voice thread reply, 0.8.1). `reconcile.py` resolves `unknown` outcomes by reading Slack. `shaping.py` / `formatters.py` are the transport layer (attribution, auto-split, output contract). Contracts: `docs/output-contract.md` (what the tools return), `docs/policy-schema.md` (profile, policy, provenance, decisions, journal).
 
 ## Development
 
@@ -69,7 +69,7 @@ Two PreToolUse hooks ship inside the plugin:
 
 The trust posture is tamper-evident, not tamper-proof: the decision secret and the journal are readable by the same OS user.
 
-## Current state — 0.8.0
+## Current state — 0.8.1
 
 The six message sends run through the core: `chat.postMessage`, `scheduleMessage`, `update`, `postEphemeral`, `meMessage`, `files.uploadV2` (`policy.CORE_METHODS`). Everything else is on the labelled *transitional* path (compact card, today's gate semantics, no journal op, no binding): reactions, pins, delete, deleteScheduledMessage, structure (`conversations.*`, usergroups), and the row-1 writes that are not message sends. Identity is checked at the first write per token (0.7.0). The library face executes reads and core sends only; `needs-human` there refuses (`no_decision_adapter`). A context policy may require checks per sender class for core sends to others (`required_checks`, 0.7.3 — refusal `check_missing` with `needed`/`provided`, beside the deny lists; `cicero` is also satisfied by the ledger's plain ✅); `init --policy-path PATH [--pin | --no-pin]` attaches a policy to an existing profile offline; `init --set KEY=VALUE` writes the three mark settings (`attribution_label`, `cc_person`, `cc_label`, 0.8.0) the same way, and `doctor` prints the resulting `marks:` line. Unknown future method names still fall to the transitional heuristic (`KNOWN_ISSUES.md` GATE-003); the effect registry grows as names appear (slack_sdk 3.46 added 16 rows).
 
