@@ -363,6 +363,25 @@ class Journal:
                 return dict(r)
         return None
 
+    def thread_sends(self, channel: str | None, thread_ts: str) -> list[dict]:
+        """Payloads of this door's ok bot-voice sends into one thread (`params.thread_ts`), oldest first — check 4 of
+        follow.follows_thread: an earlier cc of ours in the thread means the person follows it (0.8.1). Only the core
+        sends that reach the thread for real: a post or an upload's comment — not an ephemeral (one viewer), not a
+        scheduled message (not posted yet), not a /me (no thread); a transitional completeUploadExternal has no row."""
+        rows = self._exec("SELECT payload_json FROM ops WHERE outcome='ok' AND json_extract(payload_json,'$.as_bot')=1 "
+                          "AND method IN ('chat.postMessage','files.uploadV2') "
+                          "AND json_extract(payload_json,'$.params.thread_ts')=? ORDER BY intent_at ASC", (thread_ts,)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                p = json.loads(r["payload_json"] or "{}")
+            except ValueError:
+                continue
+            params = p.get("params") if isinstance(p, dict) and isinstance(p.get("params"), dict) else {}
+            if channel is None or (params.get("channel") or params.get("channel_id")) == channel:
+                out.append(p)
+        return out
+
     def find_by_comm_id(self, comm_id: str) -> list[dict]:
         rows = self._exec("SELECT * FROM ops WHERE comm_id=? ORDER BY intent_at", (comm_id,)).fetchall()
         return [dict(r) for r in rows]

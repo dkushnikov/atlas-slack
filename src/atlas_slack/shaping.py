@@ -58,7 +58,9 @@ CC_BLOCKS_METHODS = frozenset({
     "chat.update",
     "chat.scheduleMessage",
 })
-CHANNEL_KEYS = ("channel", "channel_id")      # files.completeUploadExternal addresses `channel_id`
+CHANNEL_KEYS = ("channel", "channel_id", "channels")      # completeUploadExternal: `channel_id`, or `channels` (comma-separated)
+# The sends that take `thread_ts` — the thread rule (follow.py) applies to these; a /me has no thread, an ephemeral is one viewer.
+THREAD_METHODS = frozenset({"chat.postMessage", "chat.scheduleMessage", "files.uploadV2", "files.completeUploadExternal"})
 
 MARK_EMOJI = ":blue_heart:"
 # Slack caps a message at 50 blocks; the cc section is not worth an `invalid_blocks` on a full message.
@@ -139,14 +141,24 @@ def cc_text(marks: Marks) -> str:
     return f"{marks.cc_label} <@{marks.person_user_id}>" if marks.cc_label else f"<@{marks.person_user_id}>"
 
 
+def targets_of(params: dict) -> list[str]:
+    """The conversations a send addresses, in order: `channel`, `channel_id`, `channels` (a comma-separated string or a list)."""
+    out: list[str] = []
+    for k in CHANNEL_KEYS:
+        v = params.get(k)
+        items = v.split(",") if isinstance(v, str) else (v if isinstance(v, list) else [])
+        out.extend(x.strip() for x in items if isinstance(x, str) and x.strip() and x.strip() not in out)
+    return out
+
+
 def cc_applies(method: str, params: dict, marks: Marks) -> bool:
-    """A bot-voice send to others under a profile with `cc_person: true` — never to the person's own conversations."""
+    """A bot-voice send to others under a profile with `cc_person: true` — never to the person's own conversations
+    (any addressed conversation that is the person's: their bot DM or their user id, as the profile records them)."""
     if not (marks.cc_person and marks.person_user_id):
         return False
     if method not in CC_BLOCKS_METHODS and method not in SUFFIX_METHODS:
         return False
-    channel = next((params[k] for k in CHANNEL_KEYS if isinstance(params.get(k), str)), None)
-    return channel not in marks.person_channels
+    return not (set(targets_of(params)) & marks.person_channels)
 
 
 def mentions_person(params: dict, marks: Marks) -> bool:
@@ -160,14 +172,16 @@ def mentions_person(params: dict, marks: Marks) -> bool:
     return isinstance(blocks, list) and bool(needle.search(json.dumps(blocks, ensure_ascii=False)))
 
 
-def maybe_inject_cc(method: str, params: dict, marks: Marks) -> dict:
+def maybe_inject_cc(method: str, params: dict, marks: Marks, *, cc: bool | None = None) -> dict:
     """Bot voice (0.8.0): `cc <@person>` as the last line of a send to others.
 
     Plain `text` gets a text suffix (the message stays a plain message — a bot edit with `text` alone keeps
     working); a send that carries `blocks` (the caller's, or the auto-split) gets a trailing section block;
     the suffix methods (an upload's `initial_comment`, a /me message) a text suffix. A send that already
-    mentions the person is left alone."""
-    if not cc_applies(method, params, marks) or mentions_person(params, marks):
+    mentions the person is left alone. `cc=False` is the core's word that the person already follows the
+    conversation (a thread reply, an edit of a message without the cc — core.cc_decision, 0.8.1): no cc then;
+    `None` / `True` leave the base rule to decide."""
+    if cc is False or not cc_applies(method, params, marks) or mentions_person(params, marks):
         return params
     line = cc_text(marks)
     params = dict(params)
@@ -266,10 +280,11 @@ def maybe_inject_attribution(method: str, params: dict, marks: Marks) -> dict:
     return params
 
 
-def shape_send(method: str, params: dict, as_bot: bool, marks) -> dict:
+def shape_send(method: str, params: dict, as_bot: bool, marks, *, cc: bool | None = None) -> dict:
     """Final params for a send: attribution (person voice), or bot auto-split and the cc (bot voice).
 
-    `marks` is `Marks.from_profile(profile)` (or, pre-0.8.0, the bot user id alone — `Marks.of`).
+    `marks` is `Marks.from_profile(profile)` (or, pre-0.8.0, the bot user id alone — `Marks.of`); `cc` is the
+    core's decision for a thread reply or an edit (`core.cc_decision`), None for the base rule.
     `files.uploadV2`: the door-level `attribution` option is stripped; in block mode the
     comment leaves the upload (it becomes the composite's child post, see core)."""
     marks = Marks.of(marks)
@@ -283,7 +298,7 @@ def shape_send(method: str, params: dict, as_bot: bool, marks) -> dict:
         return maybe_inject_attribution(method, params, marks)
     if method in BOT_SPLIT_METHODS:
         params = maybe_split_bot_text(params)
-    return maybe_inject_cc(method, params, marks)
+    return maybe_inject_cc(method, params, marks, cc=cc)
 
 
 def with_op_metadata(method: str, params: dict, as_bot: bool, op_id: str, comm_id: str | None) -> dict:

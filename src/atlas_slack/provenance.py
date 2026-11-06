@@ -11,8 +11,10 @@ thread_ts, as_bot, scheduled_for}; this slice hashes the **whole** caller
 params (text, blocks, channel and thread_ts are inside) plus class and profile,
 so a change of *any* parameter after the decision — `reply_broadcast`,
 `unfurl_links`, `mrkdwn` — also invalidates it. Strictly stronger, same API.
-The attribution block added for class A is deterministic from the profile, so
-hashing the caller's params binds the final payload too.
+The marks the door adds (the person-voice footer, the bot-voice cc) come from the
+profile at send time, not from the caller: hashing the caller's params binds the
+operation the person approved; the profile is the person's own file, so a change to
+it between the card and the send is theirs, never the caller's (0.8.0).
 """
 
 from __future__ import annotations

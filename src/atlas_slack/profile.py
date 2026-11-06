@@ -52,7 +52,8 @@ _FIELDS = {
 # The marks the door adds to a send (0.8.0) — plugin-level settings, values per profile. The person-voice footer
 # reads `:blue_heart: <attribution_label> <@bot>`: «Sent via» names the bot as the channel, not the author (recipients
 # read the bare `:blue_heart: @bot` as «the bot wrote this»). `cc_person` puts `<cc_label> <@person>` on bot-voice
-# sends to others, so the person is subscribed to the thread the recipients reply in (nobody reads the bot's inbound).
+# sends to others, so the person is subscribed to the thread the recipients reply in (nobody reads the bot's inbound);
+# a thread reply carries it only while the person does not follow that thread yet (follow.py, 0.8.1).
 DEFAULT_ATTRIBUTION_LABEL = "Sent via"
 DEFAULT_CC_LABEL = "cc"
 MARK_LABEL_MAX = 60

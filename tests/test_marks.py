@@ -178,9 +178,10 @@ def test_cc_as_a_section_when_the_send_carries_blocks():
     assert all(len(b["text"]["text"]) <= shaping.SECTION_TEXT_LIMIT for b in long["blocks"])
 
 
-def test_cc_on_a_bot_edit_is_reapplied_and_idempotent(env):
+def test_cc_on_a_bot_edit_keeps_what_the_original_had_and_is_idempotent(env):
+    """0.8.1: an edit keeps the cc the original had (test_thread_cc has the full matrix); the cc is never doubled."""
     env.write(cc_person=True)
-    env.transport = Slack(author=env.ids["bot_user_id"])
+    env.transport = Slack(author=env.ids["bot_user_id"], prior_text=f"old text\n\n{cc(env)}")
     env.send(env.approve(update(text="new text", comm_id="20261105-cc1")))
     assert final_of(env)["text"] == f"new text\n\n{cc(env)}" and "metadata" not in final_of(env)
     # the agent copied the whole prior message, cc line included: one cc, not two
@@ -223,6 +224,26 @@ def test_cc_mention_match_is_exact_and_a_full_message_gets_no_section():
     assert shaping.shape_send("chat.postMessage", {"channel": "C1", "text": "t", "blocks": full}, True, m)["blocks"] == full
     almost = full[:-1]
     assert len(shaping.shape_send("chat.postMessage", {"channel": "C1", "text": "t", "blocks": almost}, True, m)["blocks"]) == shaping.MAX_BLOCKS
+
+
+def test_channels_on_complete_upload_external_count_as_targets():
+    m = shaping.Marks(bot_user_id="U0BOT", cc_person=True, person_user_id="U0P", person_channels=frozenset({"D0DM", "U0P"}))
+    files = [{"id": "F1"}]
+    assert shaping.targets_of({"channels": "C1, D0DM"}) == ["C1", "D0DM"]
+    assert shaping.targets_of({"channel": "C1", "channels": ["C2", "C1"]}) == ["C1", "C2"]
+    assert not shaping.cc_applies("files.completeUploadExternal", {"files": files, "channels": "D0DM"}, m)
+    assert not shaping.cc_applies("files.completeUploadExternal", {"files": files, "channels": "C1,D0DM"}, m)
+    assert shaping.cc_applies("files.completeUploadExternal", {"files": files, "channels": "C1"}, m)
+    assert shaping.cc_applies("files.completeUploadExternal", {"files": files}, m)        # no target named: the base rule
+
+
+def test_marks_line_says_when_the_bot_dm_is_not_in_the_profile(env):
+    env.write(cc_person=True)
+    assert "(not in the person's own DM)" in cli.marks_line(env.profile)
+    env.fields.pop("person_bot_dm_id")
+    env.write()
+    line = cli.marks_line(env.profile)
+    assert "the bot DM is not in the profile — init --force records it" in line and cc(env) in line
 
 
 def test_cc_applies_names_the_cases():

@@ -133,8 +133,14 @@ def marks_line(profile) -> str:
     from atlas_slack.shaping import Marks, attribution_text, cc_text
     m = Marks.from_profile(profile)
     person = attribution_text(m) if m.bot_user_id else "unavailable (no bot_user_id — person-voice sends refuse)"
-    cc = (f"{cc_text(m)} on bot-voice sends to others (not in the person's own DM)" if m.cc_person and m.person_user_id
-          else "off")
+    if not (m.cc_person and m.person_user_id):
+        cc = "off"
+    elif getattr(profile, "person_bot_dm_id", None):
+        cc = f"{cc_text(m)} on bot-voice sends to others (not in the person's own DM)"
+    else:
+        # the door knows the person's conversations only as the profile records them (policy.person_targets)
+        cc = (f"{cc_text(m)} on bot-voice sends to others (not to the person's user id; the bot DM is not in the profile — "
+              "init --force records it once it exists, until then a report there carries the cc)")
     return f"marks: person voice {person} · bot voice cc {cc}"
 
 
@@ -286,7 +292,8 @@ def cmd_init_set(args) -> int:
     pflag = f" --profile {name}" if name != "default" else ""
     path = config_dir() / f"{name}.yaml"
     if not path.exists():
-        err(f"profile not found — run init (identity) first: python3 -m atlas_slack init{pflag}"
+        err(f"profile not found — the marks live in a file profile (an env-only setup keeps the defaults); to have one, "
+            f"run init (identity) first: python3 -m atlas_slack init{pflag}"
             + (" --user-var <VAR> --bot-var <VAR>" if name != "default" else "") + f" (no {path})")
         return 2
     updates: dict = {}

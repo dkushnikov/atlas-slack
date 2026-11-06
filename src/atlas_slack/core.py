@@ -31,7 +31,7 @@ from slack_sdk.errors import SlackApiError
 
 from atlas_slack import decision as decision_mod
 from atlas_slack import prior as prior_mod
-from atlas_slack import identity, shaping
+from atlas_slack import follow, identity, shaping
 from atlas_slack.formatters import error_fields
 from atlas_slack.journal import (
     DecisionRejected, DuplicateComm, DuplicateOp, JournalUnavailable, OpIntent, open_journal, token_hash,
@@ -159,6 +159,30 @@ def evaluate_with_journal(method, params, as_bot, provenance, profile, *, face="
     return v, journal
 
 
+def cc_decision(method: str, params: dict, as_bot: bool, marks: shaping.Marks, transport: Transport, journal,
+                prior: dict | None = None) -> bool | None:
+    """Whether a bot-voice send carries the cc, where the base rule alone cannot tell (0.8.1).
+
+    None — shaping's own rule decides (a top-level send: cc to others, none in the person's conversations).
+    An edit keeps what the original had: the cc iff the prior message mentioned the person (text, blocks or
+    attachments); a prior that could not be read → None. A thread reply (a `thread_ts` on a method that takes
+    one — shaping.THREAD_METHODS; a /me has no thread) gets the cc only while the person does not follow the
+    thread (follow.follows_thread: author, reply_users, a mention in the parent, or an earlier cc of ours in
+    the thread from the journal); a parent that cannot be read → the cc goes."""
+    if not as_bot or not shaping.cc_applies(method, params, marks) or shaping.mentions_person(params, marks):
+        return None                      # no cc to decide: the base rule says none, or the text already mentions the person
+    if method == "chat.update":
+        if prior and not prior.get("error") and isinstance(prior.get("mentions"), list):
+            return marks.person_user_id in prior["mentions"]
+        return None
+    thread_ts = params.get("thread_ts")
+    if method not in shaping.THREAD_METHODS or not isinstance(thread_ts, str) or not thread_ts:
+        return None
+    channel = next(iter(shaping.targets_of(params)), None)
+    followed = follow.follows_thread(transport, journal, channel, thread_ts, as_bot, marks.person_user_id)
+    return True if followed is None else not followed
+
+
 def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | None, *, profile,
                  transport: Transport, face: str = "mcp", manifest: dict | None = None,
                  caller: str | None = None, identity_check: bool = True) -> SendResult:
@@ -250,7 +274,10 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
         send_params = params
         if method == shaping.UPLOAD_METHOD:
             send_params = shaping.prepare_upload(params)          # resolved paths; already validated by the verdict
-        final = shaping.shape_send(method, send_params, as_bot, shaping.Marks.from_profile(profile))
+        marks = shaping.Marks.from_profile(profile)
+        # a thread reply or an edit: does the person already follow the conversation? (a read of the parent at most)
+        cc = cc_decision(method, send_params, as_bot, marks, transport, journal, prior)
+        final = shaping.shape_send(method, send_params, as_bot, marks, cc=cc)
         final = shaping.with_op_metadata(method, final, as_bot, prov.op_id, prov.comm_id)   # never on chat.update
     except shaping.ShapingError as e:
         raise refused(_refuse(verdict, e.code, e.detail))

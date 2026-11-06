@@ -24,7 +24,10 @@ PRIOR_TEXT_MAX = 20_000     # journalled verbatim up to this; Slack's own cap is
 
 
 def fetch_prior(reader: Reader, channel: str, ts: str, as_bot: bool) -> dict:
-    """`{ts, user, bot_id, text, thread_ts}` of the message at `ts`, or `{error: …}`.
+    """`{ts, user, bot_id, text, mentions, thread_ts}` of the message at `ts`, or `{error: …}`.
+
+    `mentions` (0.8.1): the user ids the message mentions in its text, blocks or attachments — a bot edit keeps the
+    cc the original had (core.cc_decision reads it here).
 
     `conversations.replies` with the message's own `ts` returns that message first whether it
     is a thread parent or a reply (history would miss a reply)."""
@@ -40,7 +43,9 @@ def fetch_prior(reader: Reader, channel: str, ts: str, as_bot: bool) -> dict:
     if msg is None:
         return {"error": "message_not_found"}
     text = msg.get("text") if isinstance(msg.get("text"), str) else ""
-    out = {"ts": ts, "user": msg.get("user"), "bot_id": msg.get("bot_id"), "text": text[:PRIOR_TEXT_MAX]}
+    from atlas_slack.follow import mentions
+    out = {"ts": ts, "user": msg.get("user"), "bot_id": msg.get("bot_id"), "text": text[:PRIOR_TEXT_MAX],
+           "mentions": sorted(mentions(msg))}
     if isinstance(msg.get("metadata"), dict) and msg["metadata"]:
         out["metadata"] = msg["metadata"]          # an update must not overwrite another app's metadata
     if len(text) > PRIOR_TEXT_MAX:

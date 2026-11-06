@@ -30,7 +30,8 @@ mcp = FastMCP(
         "as_bot=False (default) posts as the person with the :blue_heart: `Sent via @bot` mark (the label is the "
         "profile's attribution_label). Bot-voice message sends to others carry `cc @<person>` as the last line when "
         "the profile sets cc_person: true (never in the person's own DM, never on an ephemeral or a stream; a text "
-        "that already mentions the person gets no cc). "
+        "that already mentions the person gets no cc; a thread reply only while the person does not follow the thread — "
+        "the door reads the parent once; an edit keeps what the original had). "
         "chat.postMessage, chat.scheduleMessage, chat.update, chat.postEphemeral, chat.meMessage and "
         "files.uploadV2 run through the v2 core: the approval prompt shows the provenance, "
         "the human's decision is bound to that exact operation (change anything after approval → "
@@ -42,7 +43,7 @@ mcp = FastMCP(
         "slack_api('_reconcile') resolves journal rows with an unknown outcome against Slack (reads only) — "
         "required before any resend of such a comm_id. "
         "Attribution is auto-applied to user-token sends on chat.postMessage, chat.update, "
-        "chat.scheduleMessage, chat.postEphemeral (Block Kit context block) and "
+        "chat.scheduleMessage, chat.postEphemeral (Block Kit context block), chat.meMessage (text suffix) and "
         "files.uploadV2 / files.completeUploadExternal initial_comment (text suffix; "
         "uploadV2 with attribution='block' posts the comment as a separate attributed "
         "message — a child op under the same approval); long text is "
@@ -138,9 +139,9 @@ def _validate_caller_blocks(params: dict) -> None:
         raise _slack_error("invalid_blocks", problem)
 
 
-def _shaping_call(fn, *args):
+def _shaping_call(fn, *args, **kw):
     try:
-        return fn(*args)
+        return fn(*args, **kw)
     except shaping.ShapingError as e:
         raise _slack_error(e.code, e.detail) from e
 
@@ -165,11 +166,12 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
                 plain `text` over 3000 chars on chat.postMessage/update/scheduleMessage
                 is auto-split into expanded sections (caller `blocks` win); with `cc_person: true`
                 in the profile, message sends to others end with `cc @<person>` (not in the person's
-                DM, not on chat.postEphemeral). If False (default),
+                DM, not on chat.postEphemeral; a thread reply only while the person does not follow it;
+                an edit keeps what the original had). If False (default),
                 use user token — recipient-facing text sends get the :blue_heart: `Sent via @<bot>` mark:
                 chat.postMessage / chat.update / chat.scheduleMessage / chat.postEphemeral
                 receive a Block Kit context block; files.uploadV2 / files.completeUploadExternal
-                initial_comment receives a text suffix. Other methods (reactions, pins, reads)
+                initial_comment and chat.meMessage text receive a text suffix. Other methods (reactions, pins, reads)
                 are untouched.
 
     File upload — `files.uploadV2` (the gateway runs getUploadURLExternal → PUT →
@@ -289,7 +291,12 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
             call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
         if method in BLOCKS_METHODS:
             _validate_caller_blocks(call_params)
-        call_params = _shaping_call(shaping.shape_send, method, call_params, as_bot, shaping.Marks.from_profile(profile))
+        marks = shaping.Marks.from_profile(profile)
+        cc = None
+        if as_bot and shaping.cc_applies(method, call_params, marks):
+            # files.completeUploadExternal with thread_ts (bot voice): the cc only while the person does not follow the thread
+            cc = core.cc_decision(method, call_params, as_bot, marks, _sdk_transport(client), core._journal(profile)[0])
+        call_params = _shaping_call(shaping.shape_send, method, call_params, as_bot, marks, cc=cc)
         data = _response_data(client.api_call(method, params=_encode_nested(call_params)))
     except SlackApiError as e:
         code = _error_code_from(e)
