@@ -1,3 +1,3 @@
 """atlas-slack — Full Slack Web API MCP server."""
 
-__version__ = "0.8.1"   # kept equal to pyproject and the plugin manifest (tests/test_version.py)
+__version__ = "0.8.2"   # kept equal to pyproject and the plugin manifest (tests/test_version.py)

@@ -247,9 +247,14 @@ STRICT_POLICY = {
     "report_channels": {},
     "defaults": {"unknown_channel": "strictest"},
 }
-# `required_checks` (0.7.3) is accepted in a context policy but kept out of STRICT_POLICY: the built-in
-# policy requires nothing, and its digest (recorded on every journal row) stays what 0.7.2 recorded.
-_POLICY_KEYS = set(STRICT_POLICY) | {"required_checks"}
+# `required_checks` (0.7.3) and `required_checks_exempt` (0.8.2) are accepted in a context policy but kept out of
+# STRICT_POLICY: the built-in policy requires nothing, and its digest (recorded on every journal row) stays what
+# 0.7.2 recorded.
+_POLICY_KEYS = set(STRICT_POLICY) | {"required_checks", "required_checks_exempt"}
+# An exempt recipient is a DM (`D…`) or a user (`U…` / `W…`) — never a channel or a group (`C…` / `G…`): those
+# have human readers by construction. The door does not ask Slack whether the id is a bot (no is_bot heuristic).
+_EXEMPT_ID_RE = __import__("re").compile(r"[DUW][A-Z0-9]{2,31}")
+WAIVER_PREFIX = "required checks waived"   # the verdict warning; gate.describe_send marks it on the technical line
 _CHANNEL_KEYS = {"class", "voices", "approval", "modes", "name"}
 # A check name is a key of provenance.checks; no comma or space, so `needed: a, b` stays unambiguous.
 _CHECK_NAME_RE = __import__("re").compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
@@ -348,6 +353,13 @@ def validate_policy(raw) -> dict:
             raise ValueError(f"required_checks.{c} must be a list of check names (letters, digits, _ . : -)")
         norm_rc[c] = list(dict.fromkeys(names))
     pol["required_checks"] = norm_rc
+    rce = raw.get("required_checks_exempt")
+    if rce is None:
+        rce = []
+    if not isinstance(rce, list) or not all(isinstance(x, str) and _EXEMPT_ID_RE.fullmatch(x) for x in rce):
+        raise ValueError("required_checks_exempt must be a list of DM or user ids (D…, U…, W…) — "
+                         "a channel or group id (C…, G…) has human readers")
+    pol["required_checks_exempt"] = list(dict.fromkeys(rce))
     if not isinstance(raw.get("grants", []) or [], list):
         raise ValueError("grants must be a list (parsed, no semantics yet)")
     if not isinstance(raw.get("report_channels", {}) or {}, dict):
@@ -789,7 +801,7 @@ def _evaluate_send(ctx: _Ctx, provenance, *, face, manifest, journal, journal_er
         ctx.refuse("recipient_denied",
                    f"policy {policy.version}: {', '.join(sorted(denied))} is on the deny list for class {prov.cls} "
                    "— a human decision does not override it (invariant iii)")
-    _check_required(ctx, prov, channel)
+    _check_required(ctx, prov, channel, recipients)
 
     # ------------------------------------------------ journal-backed send rules (A5)
     if journal is None:
@@ -892,12 +904,16 @@ def check_satisfied(value) -> bool:
     return False
 
 
-def _check_required(ctx: _Ctx, prov: Provenance, channel) -> None:
+def _check_required(ctx: _Ctx, prov: Provenance, channel, recipients: set) -> None:
     """`required_checks` (0.7.3): a policy refusal beside the deny lists — before any human decision is asked.
 
     Applies to a core send of class X to anyone but the person: the target is neither their bot DM
     (`person_bot_dm_id`) nor their user id (`person_user_id` — a bot send that opens the DM), each only when the
-    profile sets it. A name is
+    profile sets it. Exempt too: a send whose every recipient — the channel and `provenance.target.users`, the set
+    the deny lists match — is on the policy's `required_checks_exempt` (0.8.2: recipients with no human reader,
+    named by id). One recipient outside the list keeps every check; the waiver is a verdict warning, and the
+    approval prompt marks it `checks waived` on its technical line.
+    A name is
     satisfied by a truthy `provenance.checks[name]`; `cicero` also by the door's own ledger lookup of
     `provenance.comm_id` — the same lookup as the card's ✅ line, counted only when the text was compared and
     equals the audited draft (a blocks-only or text-less send cannot be compared: declare the check instead).
@@ -908,6 +924,11 @@ def _check_required(ctx: _Ctx, prov: Provenance, channel) -> None:
         return
     if channel in person_targets(profile):
         return                                    # to the person: their bot DM, or their user id (opens it)
+    exempt = set(ctx.policy.data.get("required_checks_exempt") or [])
+    if recipients and recipients <= exempt:     # all, not any: deny matches one recipient, a waiver needs every one
+        ctx.warnings.append(f"{WAIVER_PREFIX} — {', '.join(sorted(recipients))} on required_checks_exempt "
+                            f"of policy {ctx.policy.version} (no human reader)")
+        return
     checks = prov.checks if isinstance(prov.checks, dict) else {}
     # only names a policy could require count, and are shown: a caller's odd keys never reach the reason text
     satisfied = {k for k, v in checks.items() if isinstance(k, str) and _CHECK_NAME_RE.fullmatch(k) and check_satisfied(v)}
@@ -1002,6 +1023,9 @@ def rights_table(profile, policy: PolicyState | None = None, journal_ok: bool | 
         lines.append("")
         lines.append("required checks (core sends to others; the person's bot DM and user id are exempt): "
                      + " · ".join(f"{c}: {', '.join(req[c])}" for c in CLASSES if c in req))
+        exempt = policy.data.get("required_checks_exempt") or []
+        if exempt:
+            lines.append("exempt recipients (every recipient of the send on this list): " + ", ".join(exempt))
     lines += ["", "Every write not listed above is transitional: today's gate (ask), flagged \"transitional\". "
               "username/icon_emoji/icon_url are refused on every send."]
     return "\n".join(lines)

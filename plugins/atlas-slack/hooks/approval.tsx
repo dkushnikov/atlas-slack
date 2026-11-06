@@ -55,6 +55,7 @@ const L: Record<Lang, Record<string, string>> = {
     more: 'ещё {n} симв. — полный текст в транскрипте выше', noText: '(без текста: {n} blocks)', inThread: '(в тред {ts})',
     door: 'Дверь:  ', addressee: '👤 адресат', unresolved: 'id не распознан', voice: '🎙 голос', bot: 'бот', person: '{sender} + 💙',
     binding: '🔏 привязка', journal: '📓 журнал', policy: '📜 политика', builtin: 'встроенная строгая', cicero: '🎯 Cicero', resend: '🔁 повтор',
+    waived: '🧾 проверки', waivedWhy: 'сняты политикой (у адресата нет читателя-человека)',
     declared: 'Контекст проверил:  ', nothing: 'ничего не заявлено', missing: 'Не проверено:       ',
     defaultSender: 'ты', defaultBot: 'бот', defaultBotVoice: 'Голос бота.', defaultPersonVoice: 'Твоим голосом.',
     blocks: 'Blocks ({n}):', blockHidden: '[блок {type} — не отображается на карточке; полный payload в вызове инструмента выше]',
@@ -80,6 +81,7 @@ const L: Record<Lang, Record<string, string>> = {
     more: '{n} more chars — full text in the transcript above', noText: '(no text: {n} blocks)', inThread: '(thread {ts})',
     door: 'Door:   ', addressee: '👤 recipient', unresolved: 'id unresolved', voice: '🎙 voice', bot: 'bot', person: '{sender} + 💙',
     binding: '🔏 binding', journal: '📓 journal', policy: '📜 policy', builtin: 'built-in strict', cicero: '🎯 Cicero', resend: '🔁 resend',
+    waived: '🧾 checks', waivedWhy: 'waived by policy (no human reader)',
     declared: 'Context checked:  ', nothing: 'nothing declared', missing: 'Not checked:      ',
     defaultSender: 'you', defaultBot: 'the bot', defaultBotVoice: 'Bot voice.', defaultPersonVoice: 'In your voice.',
     blocks: 'Blocks ({n}):', blockHidden: '[{type} block — not rendered on the card; full payload in the tool call above]',
@@ -194,6 +196,11 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
   let builtin = false
   let was: string | undefined
   let seenLedgerOrBelow = true
+  // `class X · policy V · checks waived · …` — the token sits right after the policy on the gate's own last line
+  // (required_checks_exempt, 0.8.2); a position, not a substring, so a comm id or a message text cannot forge it
+  const tech = (lines[lines.length - 1] ?? '').split(' · ')
+  const waived = lines.length > 1 && tech[0]!.startsWith('class ') && tech[1]?.startsWith('policy ') === true
+    && tech[2] === 'checks waived'
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i]!
     if (i === lines.length - 1 && l.startsWith('class ')) continue
@@ -220,6 +227,7 @@ export function buildCard(input: SlackInput, reason: string | undefined): string
     `${t.journal} ${OK}`,
     builtin ? `${t.policy} ${WARN} ${t.builtin}` : `${t.policy} ${OK}`,
     ...(cicero ? [cicero] : []),
+    ...(waived ? [`${t.waived} ${WARN} ${t.waivedWhy}`] : []),
     ...(input.provenance?.resend ? [`${t.resend} ${WARN}`] : []),
   ].join(' · ')
   const label = (k: string) => (CHECK_KEY[k] ? t[CHECK_KEY[k]!]! : k)

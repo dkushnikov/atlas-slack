@@ -84,6 +84,9 @@ def _when(post_at) -> str:
         return str(post_at)
 
 
+TECH_WAIVED = "checks waived"   # technical-line token: the send's required checks waived by required_checks_exempt
+
+
 def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=None, op_short: str = "",
                   prior: dict | None = None) -> str:
     """The approval prompt: one human sentence, the text, one technical line (A4 "the adapter shows these fields").
@@ -153,6 +156,11 @@ def describe_send(v: Verdict, params: dict, as_bot: bool, profile=None, names=No
         lines.append(t["ledger_unread"])
     names.save()
     tech = [f"class {v.cls}", f"policy {v.policy_version}"]
+    from atlas_slack.policy import WAIVER_PREFIX
+    if any(w.startswith(WAIVER_PREFIX) for w in v.warnings):
+        # 0.8.2: the policy, not a check, let it pass (required_checks_exempt). On the technical line — the last
+        # line, always the gate's own — so a message text cannot forge it; the card reads it from there.
+        tech.append(TECH_WAIVED)
     if p.get("comm_id"):
         tech.append(f"comm {p['comm_id']}")
     if op_short:
