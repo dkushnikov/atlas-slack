@@ -48,7 +48,7 @@ git config core.hooksPath .githooks                # once per clone: pre-push sc
 
 A marketplace added from a local path loads the source in place: a hook or skill edit is live at the next session start. **The hooks import `src/` directly** (`.mcp.json` sets `PYTHONPATH`; the gate hook prefers the checkout's `src/` when run from a source tree), so every hook invocation runs the checkout's code the moment it changes — develop in a worktree and merge atomically. The MCP server keeps its in-memory code until the session restarts; `/reload-plugins` is not enough (`version_skew` then refuses the send, by design).
 
-This repository is public: no personal names, home paths, private project references or workspace ids in files or commit messages (`tests/test_no_private_tokens.py` enforces it; names and ids are kept as salted hashes in `tests/private-token-hashes.txt`). Test fixtures use synthetic people and ids.
+This repository is public: no personal names, home paths, private project references or workspace ids in files or commit messages (`tests/test_no_private_tokens.py` enforces it; names and ids are kept as salted hashes in `tests/private-token-hashes.txt`). Test fixtures use synthetic people and ids. The scan covers **tracked** files: `git add` a new file before trusting a green run — an untracked module with a name in its docstring passed three scans and failed the fourth, once staged (2026-11-05).
 
 ## Plugin layout
 
