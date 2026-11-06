@@ -72,6 +72,26 @@ python3 -m atlas_slack init --profile acme --policy-path ~/work/acme/.claude/atl
 
 It loads and validates the file first — a missing or invalid policy exits non-zero and writes nothing — then writes `policy_path` as given (absolute or `~/…`) and no other key (the replaced lines become plain `key: value` lines, a comment on them is not kept; a profile layout a line edit cannot handle is rewritten as a whole, and the command says so). The profile name follows the usual rule: letters, digits, `_ . -`, a letter or digit first, at most 64 characters. `--pin` also writes the file's sha256 as `policy_sha256`; `--no-pin` removes the pin — also when the pinned file is broken, which is how you get out of a bad pin. After you edit a pinned policy, the old pin no longer matches and every send refuses `policy_invalid`: run the same command with `--pin` once you have read the new version (without `--pin` or `--no-pin`, `init` refuses to keep a pin that no longer matches). It does not combine with `--force` or the variable options — identity first, then the policy. `doctor` shows the result as a `policy:` line: version, sha256, pinned or unpinned, the path, valid or the loader's error.
 
+### Optional — the marks under the messages (0.8.0)
+
+Two things the door adds to a message are yours to set once the profile exists. Each command below writes one key into the profile — no tokens, no network — and answers with one `marks:` line, what the door now adds in each voice (`doctor` prints the same line). Add `--profile <name>` for a non-default profile. A server that already runs 0.8.0 reads the profile at every call, so the new value applies to the next send; only a session started before the 0.8.0 update needs a restart (its server reads the new key as `profile_invalid`).
+
+- **The footer under a message in your voice** reads `💙 Sent via <agent>` — you are the sender, the agent is the channel (a bare `💙 <agent>` reads as «the agent wrote this»). Change the word, or drop it:
+
+  ```bash
+  python3 -m atlas_slack init --set attribution_label=via      # 💙 via @Atlas
+  python3 -m atlas_slack init --set attribution_label=         # 💙 @Atlas — the mention alone
+  ```
+
+- **A cc to you on the agent's messages to others.** Colleagues reply to the agent's messages, and nothing reads the agent's inbound; a mention subscribes you to the thread, so the cc is the subscription. Off by default:
+
+  ```bash
+  python3 -m atlas_slack init --set cc_person=true             # the last line of the agent's messages to others: cc @you
+  python3 -m atlas_slack init --set cc_label=fyi               # the word before the mention; cc_label= leaves the mention alone
+  ```
+
+  Never in your own DM with the agent, never on an ephemeral or a stream, and not when the text already mentions you. A label is one line of at most 60 characters; a value the loader refuses writes nothing.
+
 ## 5. Check
 
 ```bash
