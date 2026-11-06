@@ -7,7 +7,7 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 Works on its own. Where the official Slack MCP is installed too, the two coexist (that one covers canvas and semantic search; this one the full Web API, two voices, attribution and the write gate) — and when both could perform a write, use `slack_api`: the guarantees below (two voices, a decision per operation, the journal) apply only to calls made through it.
 
-Two tools, that's the whole surface (since v1.2; output contract v1.12, plugin 0.7.3):
+Two tools, that's the whole surface (since v1.2; output contract v1.13, plugin 0.8.0):
 
 - **`slack_api(method, params, as_bot=?)`** — every Slack Web API method (200+).
 - **`slack_download(file_id, out_dir?, as_bot?)`** — file bytes to local disk (the JSON API never serves file content).
@@ -85,28 +85,32 @@ Every Slack action lives at the intersection of two questions. Decide both befor
 
 | Where × Who | Token | Call | Recipient sees |
 |---|---|---|---|
-| Channel · authored by the agent | bot (`as_bot=True`) | `slack_api("chat.postMessage", ..., as_bot=True)` | the bot as poster |
-| DM-as-the-person · authored by the agent | user (`as_bot=False`) | `slack_api("chat.postMessage", ..., as_bot=False)` | the person's name + `:blue_heart: @<bot>` footer block |
+| Channel · authored by the agent | bot (`as_bot=True`) | `slack_api("chat.postMessage", ..., as_bot=True)` | the bot as poster; `cc @<person>` as the last line when the profile sets `cc_person` (§ Bot voice) |
+| DM-as-the-person · authored by the agent | user (`as_bot=False`) | `slack_api("chat.postMessage", ..., as_bot=False)` | the person's name + the `:blue_heart: Sent via @<bot>` footer block |
 | Any target · the person will send it themselves | n/a | no API call — return the text to the person | the person's name only |
 | Reactions / pins / channel structure | bot (`as_bot=True`) | `reactions.add`, `pins.add`, `conversations.create` / `invite` / `archive` — **not** `conversations.open` for the person's DMs, which runs under the person's token (row above) | the bot as actor |
 | Status / DND / reminders (the person's own state) | user (`as_bot=False`, default) | `users.profile.set`, `dnd.*`, `reminders.add` | the person's own state |
 
 ## Attribution rules
 
-When `as_bot=False`, `slack_api` auto-applies the `:blue_heart: @<bot>` attribution to recipient-facing text sends (the bot id comes from the profile's `bot_user_id`; without it a person-voice send refuses `attribution_unavailable`). Coverage is method-aware:
+When `as_bot=False`, `slack_api` auto-applies the `:blue_heart: Sent via @<bot>` mark to recipient-facing text sends (the bot id comes from the profile's `bot_user_id`, the label from its `attribution_label` — default `Sent via`: the person is the sender, the bot is the channel, and a bare `@<bot>` reads as authorship; without the id a person-voice send refuses `attribution_unavailable`). Never add the mark yourself — the door does, on a post and on every edit. Coverage is method-aware:
 
 | Method | Attribution shape |
 |---|---|
 | `chat.postMessage`, `chat.update`, `chat.scheduleMessage`, `chat.postEphemeral` | Block Kit context block appended; long `text` auto-split into ≤3000-char sections, each `expand: true` (no "Show more" folds) |
-| same three (not postEphemeral) under `as_bot=True` | No attribution; `text` > 3000 chars with no caller `blocks` is auto-split the same way (since v1.3 — before, Slack cut bot posts at ~4000 chars mid-sentence) |
+| same three (not postEphemeral) under `as_bot=True` | No attribution; `text` > 3000 chars with no caller `blocks` is auto-split the same way (since v1.3 — before, Slack cut bot posts at ~4000 chars mid-sentence); with `cc_person: true` in the profile the send ends with `cc @<person>` (§ Bot voice, 0.8.0) |
 | `files.uploadV2` / `files.completeUploadExternal` with `initial_comment` | Text suffix on `initial_comment` (file-share messages cannot carry blocks); `attribution: "block"` on `files.uploadV2` posts the comment as a separate attributed message instead — a child op under the same approval (0.6.0) |
 | `chat.meMessage` | Text suffix on `text` (a /me message has no blocks) |
-| `chat.startStream` / `chat.appendStream` / `chat.stopStream` | **Refused under user token** — streaming is bot-only, always pass `as_bot=True` |
+| `chat.startStream` / `chat.appendStream` / `chat.stopStream` | **Refused under user token** — streaming is bot-only, always pass `as_bot=True`; no cc on a stream either (v1 skips them) |
 | Reactions, pins, reads, user-state changes (`users.profile.set`, `dnd.*`) | No injection — no recipient-facing text |
 
 Bot-token calls (`as_bot=True`) never get attribution — the bot is already the author on record.
 
 Caller-supplied `blocks` are never rewritten; a section over 3000 chars is refused pre-flight with the offending block index (split it, or pre-check with `blocks.validate`). `username` / `icon_emoji` / `icon_url` are refused on every write (`identity_override`): no caller sets the displayed sender.
+
+## Bot voice — the cc to the person (0.8.0)
+
+Recipients reply to the bot's messages, and nobody reads the bot's inbound. When the profile sets `cc_person: true`, a bot-voice message send to others ends with `cc @<person>` (the label is the profile's `cc_label`, default `cc`): the mention subscribes the person to the thread, so the cc is the subscription. The door adds it — never write it yourself: a text that already mentions the person gets no cc (one mention is enough), and a bot `chat.update` gets it again on every edit (an edit whose text carries the old line gets one cc, not two). Shape: the last line of plain `text`; a trailing section block when the send carries `blocks`; a suffix on an upload's `initial_comment` and on a /me message. Never: in the person's own conversations (their bot DM, their user id), on `chat.postEphemeral` (one viewer, nobody replies), on the streams (v1 skips them), in the person's voice; a message that already has 50 blocks gets no cc section. A bot `chat.update` with `text` alone on a message that carried `blocks` (the caller's, or an auto-split over 3000 characters) leaves Slack's old blocks in place — Slack keeps `blocks` an edit does not pass; pass the new blocks too (true before 0.8.0 as well). The card shows the text you passed; the cc is not on it (nor is the footer). `python3 -m atlas_slack doctor` prints the `marks:` line — both marks as this profile sends them; `init --set cc_person=true|false` is the person's switch (the setup skill).
 
 ## File upload — `files.uploadV2` (one call)
 
@@ -118,7 +122,7 @@ slack_api("files.uploadV2", {
     "channel": "C...",                 # a STRING — never `channels` (UPL-001: a string there is split char by char)
     "title": "...",                    # optional; filename defaults to the path's basename
     "thread_ts": "...",                # optional
-    "initial_comment": "<text>",       # optional; user token → :blue_heart: suffix appended
+    "initial_comment": "<text>",       # optional; user token → the :blue_heart: Sent via suffix; bot token → the cc line when the profile sets it
 }, as_bot=False)
 ```
 

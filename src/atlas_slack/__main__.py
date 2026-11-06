@@ -3,6 +3,7 @@
     python3 -m atlas_slack                      MCP server on stdio (what the plugin's .mcp.json runs)
     python3 -m atlas_slack init [--profile NAME] [--user-var VAR --bot-var VAR] [--force]
     python3 -m atlas_slack init [--profile NAME] --policy-path PATH [--pin | --no-pin]   # attach a policy; offline
+    python3 -m atlas_slack init [--profile NAME] --set KEY=VALUE [--set …]              # write a setting; offline
     python3 -m atlas_slack doctor [--profile NAME]   # ends with one `next: <code> — …` line; exit 0 only on `send`
 """
 
@@ -98,6 +99,43 @@ def _set_top_level(text: str, updates: dict) -> str:
     if tail and out and not out[-1].endswith("\n"):
         out[-1] += "\n"
     return "".join(out + tail)
+
+
+def _edit_profile_text(text: str, updates: dict, expected: dict) -> tuple[str, bool]:
+    """The profile text with `updates` as top-level lines (None removes a key) — or, when the line edit cannot
+    produce exactly `expected`, the mapping rewritten as a whole under the header comments. Returns (text, rewritten).
+
+    A key spelled in a way the line edit did not match (`? key`, flow style …) would survive as a duplicate — the
+    parser keeps the last one, so the equality check alone cannot see it. Any line beyond the ones written that
+    names one of the keys sends the file to the whole rewrite (a false alarm costs only the comments)."""
+    import itertools
+
+    import yaml
+    new_text = _set_top_level(text, updates)
+    try:
+        same = yaml.safe_load(new_text) == expected
+    except Exception:  # noqa: BLE001
+        same = False
+    names = "|".join(re.escape(k) for k in updates)
+    keys_left = sum(1 for ln in new_text.splitlines()
+                    if not ln.lstrip().startswith("#") and re.search(rf"\b(?:{names})\b", ln))
+    if keys_left != sum(1 for v in updates.values() if v is not None):
+        same = False
+    if same:
+        return new_text, False
+    header = "".join(itertools.takewhile(lambda ln: ln.startswith("#"), text.splitlines(keepends=True)))
+    return (header + ("" if not header or header.endswith("\n") else "\n")
+            + yaml.safe_dump(expected, sort_keys=False, allow_unicode=True)), True
+
+
+def marks_line(profile) -> str:
+    """`marks: …` — what the door adds to a send under this profile (0.8.0): doctor prints it, `init --set` answers with it."""
+    from atlas_slack.shaping import Marks, attribution_text, cc_text
+    m = Marks.from_profile(profile)
+    person = attribution_text(m) if m.bot_user_id else "unavailable (no bot_user_id — person-voice sends refuse)"
+    cc = (f"{cc_text(m)} on bot-voice sends to others (not in the person's own DM)" if m.cc_person and m.person_user_id
+          else "off")
+    return f"marks: person voice {person} · bot voice cc {cc}"
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -197,24 +235,9 @@ def cmd_init_policy(args) -> int:
     expected["policy_path"] = given
     if pin is not None:
         expected["policy_sha256"] = pin
-    new_text = _set_top_level(text, {"policy_path": given, "policy_sha256": pin})
-    try:
-        same = yaml.safe_load(new_text) == expected
-    except Exception:  # noqa: BLE001
-        same = False
-    # a key spelled in a way the line edit did not match (`? policy_path`, flow style …) would survive as a
-    # duplicate — the parser keeps the last one, so the comparison above cannot see it. Any line beyond the ones
-    # written that names either key sends the file to the whole rewrite (a false alarm costs only the comments).
-    keys_left = sum(1 for ln in new_text.splitlines()
-                    if not ln.lstrip().startswith("#") and re.search(r"\bpolicy_(?:path|sha256)\b", ln))
-    if keys_left != (1 if pin is None else 2):
-        same = False
-    if not same:
-        # a layout the line edit cannot handle (flow mapping, a document marker …): rewrite the mapping, keep the header
-        import itertools
-        header = "".join(itertools.takewhile(lambda ln: ln.startswith("#"), text.splitlines(keepends=True)))
-        new_text = header + ("" if not header or header.endswith("\n") else "\n") + \
-            yaml.safe_dump(expected, sort_keys=False, allow_unicode=True)
+    new_text, rewritten = _edit_profile_text(text, {"policy_path": given, "policy_sha256": pin}, expected)
+    if rewritten:
+        # a layout the line edit cannot handle (flow mapping, a document marker …): the mapping rewritten, header kept
         print(f"note: {path} was rewritten as a whole (its layout did not allow a line edit); comments in its body are not kept",
               file=sys.stderr)
     if new_text != text:
@@ -239,10 +262,92 @@ def cmd_init_policy(args) -> int:
     return 0
 
 
+def cmd_init_set(args) -> int:
+    """`init --set KEY=VALUE [--set …]`: write a setting into an existing profile — the door owns the file (0.8.0).
+
+    Keys: `profile.SETTINGS` (`attribution_label`, `cc_person`, `cc_label`). The value is taken as given — a label is
+    the string (`""` = none), `cc_person` is `true` or `false`. The merged mapping is validated by the door's own
+    loader before anything is written (a value the loader refuses writes nothing — a broken profile would refuse
+    every send). Identity fields go through `init --force`, the policy through `init --policy-path`.
+    """
+    import yaml
+
+    from atlas_slack.profile import SETTINGS, Profile, _NAME_RE, _validate, config_dir, load_profile
+    err = lambda msg: print(msg, file=sys.stderr)   # noqa: E731
+    if args.force or args.user_var is not None or args.bot_var is not None or args.policy_path is not None \
+            or args.pin or args.no_pin:
+        err("--set writes settings and touches nothing else; it does not combine with --force / --user-var / --bot-var / "
+            "--policy-path / --pin / --no-pin — one command per concern")
+        return 2
+    name = args.profile or os.environ.get("ATLAS_SLACK_PROFILE") or "default"
+    if not _NAME_RE.match(name):
+        err(f"profile name {name!r} is not valid: letters, digits, `_ . -`, up to 64 chars, no path parts")
+        return 2
+    pflag = f" --profile {name}" if name != "default" else ""
+    path = config_dir() / f"{name}.yaml"
+    if not path.exists():
+        err(f"profile not found — run init (identity) first: python3 -m atlas_slack init{pflag}"
+            + (" --user-var <VAR> --bot-var <VAR>" if name != "default" else "") + f" (no {path})")
+        return 2
+    updates: dict = {}
+    for item in args.set:
+        key, sep, value = item.partition("=")
+        key = key.strip()
+        if not sep or not key:
+            err(f"--set {item!r}: the form is KEY=VALUE")
+            return 2
+        if key not in SETTINGS:
+            err(f"--set {key!r}: not a setting — the settings are {', '.join(SETTINGS)} (identity fields: init --force; "
+                "the policy: init --policy-path)")
+            return 2
+        if key == "cc_person":
+            if value.strip().lower() not in ("true", "false"):
+                err(f"--set {key}=…: true or false")
+                return 2
+            updates[key] = value.strip().lower() == "true"
+        else:
+            updates[key] = value                       # the label as given; "" = the mention alone
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+    except Exception as e:  # noqa: BLE001
+        err(f"cannot read {path} ({type(e).__name__}: {e}) — nothing written; doctor{pflag} says what to fix")
+        return 2
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        err(f"{path} is not a mapping — nothing written; doctor{pflag} says what to fix")
+        return 2
+    expected = {**data, **updates}
+    probe = Profile(name=name, source="file")           # the door's own loader decides before anything is written
+    _validate(expected, probe)
+    if probe.errors:
+        err("refused — the profile would not load: " + "; ".join(probe.errors) + " — nothing written")
+        return 1
+    new_text, rewritten = _edit_profile_text(text, updates, expected)
+    if rewritten:
+        print(f"note: {path} was rewritten as a whole (its layout did not allow a line edit); comments in its body are not kept",
+              file=sys.stderr)
+    if new_text != text:
+        _write_atomic(path, new_text)
+        check = load_profile(name)
+        if check.errors or any(getattr(check, k) != v for k, v in updates.items()):
+            _write_atomic(path, text)                      # never leave a profile the door reads differently
+            err(f"the written profile did not read back as intended ({'; '.join(check.errors) or 'value differs'}) — "
+                f"restored {path} as it was")
+            return 1
+    else:
+        check = load_profile(name)
+    print(marks_line(check))
+    return 0
+
+
 def cmd_init(args) -> int:
     import yaml
 
     from atlas_slack.profile import DEFAULT_TOKEN_SOURCES, _NAME_RE, config_dir, load_profile
+    if args.set:
+        return cmd_init_set(args)
     if args.policy_path is not None or args.pin or args.no_pin:
         return cmd_init_policy(args)
     name = args.profile or os.environ.get("ATLAS_SLACK_PROFILE") or "default"
@@ -500,6 +605,7 @@ def cmd_doctor(args) -> int:
     if not profile.decision_adapters:
         first("fix-journal", "decision_adapters is empty in the profile — human-decided sends have no adapter; put [cc-hook] back")
     print(_doctor_policy_line(profile, pol, pflag))
+    print(marks_line(profile))
     print()
     print(rights(profile))
     if nxt is None:
@@ -530,6 +636,9 @@ def main(argv: list[str] | None = None):
         pin = p_init.add_mutually_exclusive_group()
         pin.add_argument("--pin", action="store_true", help="with --policy-path: also pin the file's sha256 (policy_sha256)")
         pin.add_argument("--no-pin", action="store_true", help="with --policy-path: remove the pin (policy_sha256)")
+        p_init.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
+                            help="write a setting into an existing profile (attribution_label, cc_person, cc_label); "
+                                 "repeatable; no tokens, no network")
         p_doc = sub.add_parser("doctor", help="check the tokens against the profile, print the rights table and ONE next step")
         p_doc.add_argument("--profile", help="profile name (default: $ATLAS_SLACK_PROFILE or `default`)")
         args = parser.parse_args(argv)

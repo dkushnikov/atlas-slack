@@ -15,8 +15,8 @@ Slack for one person and their agent, with a decision per operation: one gateway
 
 Two tokens, two voices:
 
-- `SLACK_USER_TOKEN` (`xoxp-`) — reads (search, history, profiles, DMs) and sends **in the person's voice**: the message carries a `💙 <bot>` context block so the recipient sees the agent took part.
-- `SLACK_BOT_TOKEN` (`xoxb-`) — sends **in the bot's voice** (the bot is the author on record), reactions, pins.
+- `SLACK_USER_TOKEN` (`xoxp-`) — reads (search, history, profiles, DMs) and sends **in the person's voice**: the message carries a `💙 Sent via <bot>` context block so the recipient sees the agent took part (the label is the profile's `attribution_label`, 0.8.0).
+- `SLACK_BOT_TOKEN` (`xoxb-`) — sends **in the bot's voice** (the bot is the author on record), reactions, pins. With `cc_person: true` in the profile a bot-voice message send to others ends with `cc <@person>` — the mention subscribes the person to the thread (0.8.0); never in the person's own DM.
 
 The attributed bot id comes from the profile (`bot_user_id`) — there is no workspace literal in code.
 
@@ -69,8 +69,8 @@ Two PreToolUse hooks ship inside the plugin:
 
 The trust posture is tamper-evident, not tamper-proof: the decision secret and the journal are readable by the same OS user.
 
-## Current state — 0.7.3
+## Current state — 0.8.0
 
-The six message sends run through the core: `chat.postMessage`, `scheduleMessage`, `update`, `postEphemeral`, `meMessage`, `files.uploadV2` (`policy.CORE_METHODS`). Everything else is on the labelled *transitional* path (compact card, today's gate semantics, no journal op, no binding): reactions, pins, delete, deleteScheduledMessage, structure (`conversations.*`, usergroups), and the row-1 writes that are not message sends. Identity is checked at the first write per token (0.7.0). The library face executes reads and core sends only; `needs-human` there refuses (`no_decision_adapter`). A context policy may require checks per sender class for core sends to others (`required_checks`, 0.7.3 — refusal `check_missing` with `needed`/`provided`, beside the deny lists; `cicero` is also satisfied by the ledger's plain ✅); `init --policy-path PATH [--pin | --no-pin]` attaches a policy to an existing profile offline. Unknown future method names still fall to the transitional heuristic (`KNOWN_ISSUES.md` GATE-003); the effect registry grows as names appear (slack_sdk 3.46 added 16 rows).
+The six message sends run through the core: `chat.postMessage`, `scheduleMessage`, `update`, `postEphemeral`, `meMessage`, `files.uploadV2` (`policy.CORE_METHODS`). Everything else is on the labelled *transitional* path (compact card, today's gate semantics, no journal op, no binding): reactions, pins, delete, deleteScheduledMessage, structure (`conversations.*`, usergroups), and the row-1 writes that are not message sends. Identity is checked at the first write per token (0.7.0). The library face executes reads and core sends only; `needs-human` there refuses (`no_decision_adapter`). A context policy may require checks per sender class for core sends to others (`required_checks`, 0.7.3 — refusal `check_missing` with `needed`/`provided`, beside the deny lists; `cicero` is also satisfied by the ledger's plain ✅); `init --policy-path PATH [--pin | --no-pin]` attaches a policy to an existing profile offline; `init --set KEY=VALUE` writes the three mark settings (`attribution_label`, `cc_person`, `cc_label`, 0.8.0) the same way, and `doctor` prints the resulting `marks:` line. Unknown future method names still fall to the transitional heuristic (`KNOWN_ISSUES.md` GATE-003); the effect registry grows as names appear (slack_sdk 3.46 added 16 rows).
 
 Tests: `python3 -m pytest -q tests/` — level 1 (fake transports, no secrets) plus 8 e2e tests gated by `SLACK_E2E=1`. The version history with what each release changed: `CHANGELOG.md`.
