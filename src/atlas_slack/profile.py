@@ -47,8 +47,16 @@ _FIELDS = {
     "workspace_id", "person_user_id", "bot_user_id", "person_bot_dm_id", "token_sources",
     "policy_path", "policy_sha256", "journal_dir", "decision_adapters", "freeze",
     "decision_fallback", "decision_permission_modes", "language", "names", "resolve_names",
-    "ledger_dir",
+    "ledger_dir", "attribution_label", "cc_person", "cc_label",
 }
+# The marks the door adds to a send (0.8.0) — plugin-level settings, values per profile. The person-voice footer
+# reads `:blue_heart: <attribution_label> <@bot>`: «Sent via» names the bot as the channel, not the author (recipients
+# read the bare `:blue_heart: @bot` as «the bot wrote this»). `cc_person` puts `<cc_label> <@person>` on bot-voice
+# sends to others, so the person is subscribed to the thread the recipients reply in (nobody reads the bot's inbound).
+DEFAULT_ATTRIBUTION_LABEL = "Sent via"
+DEFAULT_CC_LABEL = "cc"
+MARK_LABEL_MAX = 60
+SETTINGS = ("attribution_label", "cc_person", "cc_label")      # the keys `init --set KEY=VALUE` may write
 LANGUAGES = ("en", "ru")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SECRET_RE = re.compile(r"^xox[abpre]-|^xapp-")
@@ -82,6 +90,9 @@ class Profile:
     language: str = "en"             # approval prompt language
     names: dict = field(default_factory=dict)   # id → display label override (e.g. "Ann", "DM Ann↔Atlas")
     resolve_names: bool = True       # resolve ids via conversations.info / users.info (reads) for the prompt
+    attribution_label: str = DEFAULT_ATTRIBUTION_LABEL   # person-voice footer `:blue_heart: <label> <@bot>`; "" = the mention alone
+    cc_person: bool = False          # bot-voice sends to others carry `<cc_label> <@person>` (0.8.0); never in the person's DM
+    cc_label: str = DEFAULT_CC_LABEL
     errors: list = field(default_factory=list)   # non-empty → broken: writes refuse
     path: str | None = None
 
@@ -108,6 +119,7 @@ class Profile:
             "freeze": self.freeze, "decision_fallback": self.decision_fallback,
             "decision_permission_modes": list(self.decision_permission_modes),
             "language": self.language, "names": dict(self.names), "resolve_names": self.resolve_names,
+            "attribution_label": self.attribution_label, "cc_person": self.cc_person, "cc_label": self.cc_label,
             "errors": list(self.errors),
         }
 
@@ -176,12 +188,22 @@ def _validate(raw: dict, prof: Profile) -> None:
             errs.append("names must map ids to display labels (strings)")
         else:
             prof.names = dict(nm)
-    for k in ("freeze", "decision_fallback", "resolve_names"):
+    for k in ("freeze", "decision_fallback", "resolve_names", "cc_person"):
         if k in raw:
             if not isinstance(raw[k], bool):
                 errs.append(f"{k} must be true/false")
             else:
                 setattr(prof, k, raw[k])
+    for k in ("attribution_label", "cc_label"):
+        if k in raw:
+            v = raw[k]
+            if not isinstance(v, str) or v != v.strip() or any(ch < " " for ch in v) or len(v) > MARK_LABEL_MAX:
+                errs.append(f"{k} must be one line of at most {MARK_LABEL_MAX} characters with no surrounding "
+                            f"whitespace (\"\" for none)")
+            else:
+                setattr(prof, k, v)
+    if prof.cc_person and not prof.person_user_id:
+        errs.append("cc_person: true needs person_user_id — the cc mentions the person")
 
 
 def load_profile(name: str | None = None) -> Profile:

@@ -126,7 +126,7 @@ def test_slack_api_as_bot_uses_bot_client(mock_webclient):
 
 
 def test_slack_api_post_message_user_mode_injects_attribution(mock_webclient):
-    """User-token chat.postMessage must append :blue_heart: <@bot_user_id> context block."""
+    """User-token chat.postMessage must append the `:blue_heart: Sent via <@bot_user_id>` context block (0.8.0 label)."""
     mock_webclient.api_call.return_value = {"ok": True, "ts": "1.2"}
     slack_api("chat.postMessage", {"channel": "C1", "text": "hello"})
 
@@ -139,7 +139,7 @@ def test_slack_api_post_message_user_mode_injects_attribution(mock_webclient):
     # Second block is attribution
     attr = blocks[1]
     assert attr["type"] == "context"
-    assert attr["elements"][0]["text"] == f":blue_heart: <@{ATLAS_BOT_USER_ID}>"
+    assert attr["elements"][0]["text"] == f":blue_heart: Sent via <@{ATLAS_BOT_USER_ID}>"
     # Original text param preserved for fallback rendering
     assert call_params["text"] == "hello"
 
@@ -232,7 +232,7 @@ def test_slack_api_files_complete_upload_initial_comment_gets_suffix(mock_webcli
     call_params = mock_webclient.api_call.call_args.kwargs["params"]
     assert "blocks" not in call_params  # suffix path, not blocks path
     assert call_params["initial_comment"].startswith("see attached")
-    assert call_params["initial_comment"].endswith(f":blue_heart: <@{ATLAS_BOT_USER_ID}>")
+    assert call_params["initial_comment"].endswith(f"\n\n:blue_heart: Sent via <@{ATLAS_BOT_USER_ID}>")
 
 
 def test_slack_api_files_complete_upload_no_initial_comment_untouched(mock_webclient):

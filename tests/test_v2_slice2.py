@@ -207,7 +207,7 @@ def test_f1_upload_runs_through_the_core_and_binds_the_bytes(env, tmp_path):
     res = env.send(ti)
     method, sent, as_bot = env.transport.calls[0]
     assert method == "files.uploadV2" and as_bot is False
-    assert sent["initial_comment"].startswith("see attached") and sent["initial_comment"].endswith(f":blue_heart: <@{env.ids['bot_user_id']}>")
+    assert sent["initial_comment"].startswith("see attached") and sent["initial_comment"].endswith(f":blue_heart: Sent via <@{env.ids['bot_user_id']}>")
     assert "attribution" not in sent and sent["file"] == b"hello" and sent["filename"] == "doc.txt"   # bytes on the wire
     assert json.loads(row(env, res.op_id)["payload_json"])["final_params"]["file"] == str(tmp_path / "doc.txt")  # path in the journal
     r = row(env, res.op_id)
@@ -367,7 +367,7 @@ def test_m1_me_message_suffix_and_done(env):
     env.transport = Slack()
     res = env.send(env.approve(me()))
     method, sent, _ = env.transport.calls[0]
-    assert method == "chat.meMessage" and sent["text"].endswith(f":blue_heart: <@{env.ids['bot_user_id']}>")
+    assert method == "chat.meMessage" and sent["text"].endswith(f":blue_heart: Sent via <@{env.ids['bot_user_id']}>")
     assert row(env, res.op_id)["outcome"] == "ok"
     bad = me(); del bad["params"]["text"]
     assert "missing_params" in env.hook(bad)["permissionDecisionReason"]

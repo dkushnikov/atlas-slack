@@ -4,13 +4,22 @@ Moved out of `gateway.py` (v2 core slice) so the MCP server and the library
 `Door` produce byte-identical payloads. Behaviour is unchanged from 0.4.0 /
 contract v1.3 §9, except that the attributed bot id comes from the profile
 (`bot_user_id`) — no workspace literal in code (Strategy п. 17).
+
+0.8.0 — the marks come from the profile as a whole (`Marks.from_profile`): the person-voice footer
+carries a label (`attribution_label`, default «Sent via»: the bot is the channel, not the author), and
+bot-voice sends to others carry `cc <@person>` when the profile sets `cc_person` (the mention subscribes
+the person to the thread the recipients reply in; the bot's inbound is read by nobody).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
+from dataclasses import dataclass
 from pathlib import Path
+
+from atlas_slack.profile import DEFAULT_ATTRIBUTION_LABEL, DEFAULT_CC_LABEL
 
 BLOCKS_METHODS = frozenset({
     "chat.postMessage",
@@ -42,6 +51,19 @@ METADATA_EVENT_TYPE = "atlas_slack_op"
 # list and, after post_at, in the channel (Codex addendum A1).
 METADATA_METHODS = frozenset({"chat.postMessage"})
 
+# Bot-voice cc (0.8.0): the three message sends that reach a thread, plus the suffix methods below. Not
+# `chat.postEphemeral` (one viewer, nobody replies to it) and not the streams (transitional, bot-only; v1 skips them).
+CC_BLOCKS_METHODS = frozenset({
+    "chat.postMessage",
+    "chat.update",
+    "chat.scheduleMessage",
+})
+CHANNEL_KEYS = ("channel", "channel_id")      # files.completeUploadExternal addresses `channel_id`
+
+MARK_EMOJI = ":blue_heart:"
+# Slack caps a message at 50 blocks; the cc section is not worth an `invalid_blocks` on a full message.
+MAX_BLOCKS = 50
+
 # Slack caps a section block's text at 3000 chars; longer → invalid_blocks.
 SECTION_TEXT_LIMIT = 3000
 
@@ -61,6 +83,32 @@ class ShapingError(Exception):
         self.detail = detail
 
 
+@dataclass(frozen=True)
+class Marks:
+    """What the door adds to a send, read from the profile (0.8.0): the person-voice footer and the bot-voice cc.
+
+    `person_channels` are the conversations that reach the person themself (their bot DM, their user id —
+    `policy.person_targets`): a cc there would be a cc to oneself, so none is added."""
+    bot_user_id: str | None = None
+    attribution_label: str = DEFAULT_ATTRIBUTION_LABEL
+    cc_person: bool = False
+    cc_label: str = DEFAULT_CC_LABEL
+    person_user_id: str | None = None
+    person_channels: frozenset = frozenset()
+
+    @classmethod
+    def from_profile(cls, profile) -> "Marks":
+        from atlas_slack.policy import person_targets
+        return cls(bot_user_id=profile.bot_user_id, attribution_label=profile.attribution_label,
+                   cc_person=bool(profile.cc_person), cc_label=profile.cc_label,
+                   person_user_id=profile.person_user_id, person_channels=frozenset(person_targets(profile)))
+
+    @classmethod
+    def of(cls, marks) -> "Marks":
+        """A `Marks`, or the pre-0.8.0 argument — the bot user id alone (defaults for the rest)."""
+        return marks if isinstance(marks, Marks) else cls(bot_user_id=marks)
+
+
 def _require_bot_id(bot_user_id: str | None) -> str:
     if not bot_user_id:
         raise ShapingError(
@@ -72,15 +120,69 @@ def _require_bot_id(bot_user_id: str | None) -> str:
     return bot_user_id
 
 
-def attribution_block(bot_user_id: str | None) -> dict:
-    return {
-        "type": "context",
-        "elements": [{"type": "mrkdwn", "text": f":blue_heart: <@{_require_bot_id(bot_user_id)}>"}],
-    }
+def attribution_text(marks: Marks) -> str:
+    """`:blue_heart: Sent via <@bot>` — the profile's label between the emoji and the mention; "" = the mention alone."""
+    bot = _require_bot_id(marks.bot_user_id)
+    return f"{MARK_EMOJI} {marks.attribution_label} <@{bot}>" if marks.attribution_label else f"{MARK_EMOJI} <@{bot}>"
 
 
-def attribution_suffix(bot_user_id: str | None) -> str:
-    return f"\n\n:blue_heart: <@{_require_bot_id(bot_user_id)}>"
+def attribution_block(marks: Marks) -> dict:
+    return {"type": "context", "elements": [{"type": "mrkdwn", "text": attribution_text(marks)}]}
+
+
+def attribution_suffix(marks: Marks) -> str:
+    return f"\n\n{attribution_text(marks)}"
+
+
+def cc_text(marks: Marks) -> str:
+    """`cc <@person>` — the profile's label before the mention; "" = the mention alone."""
+    return f"{marks.cc_label} <@{marks.person_user_id}>" if marks.cc_label else f"<@{marks.person_user_id}>"
+
+
+def cc_applies(method: str, params: dict, marks: Marks) -> bool:
+    """A bot-voice send to others under a profile with `cc_person: true` — never to the person's own conversations."""
+    if not (marks.cc_person and marks.person_user_id):
+        return False
+    if method not in CC_BLOCKS_METHODS and method not in SUFFIX_METHODS:
+        return False
+    channel = next((params[k] for k in CHANNEL_KEYS if isinstance(params.get(k), str)), None)
+    return channel not in marks.person_channels
+
+
+def mentions_person(params: dict, marks: Marks) -> bool:
+    """The caller's text (or blocks) already mentions the person — a mention subscribes them; no cc on top.
+    Also what makes a bot `chat.update` idempotent when the new text carries the old cc line."""
+    needle = re.compile(re.escape(f"<@{marks.person_user_id}") + r"(?=[|>])")     # `<@U…>` and `<@U…|name>`, never a longer id
+    for key in ("text", "initial_comment"):
+        if isinstance(params.get(key), str) and needle.search(params[key]):
+            return True
+    blocks = params.get("blocks")
+    return isinstance(blocks, list) and bool(needle.search(json.dumps(blocks, ensure_ascii=False)))
+
+
+def maybe_inject_cc(method: str, params: dict, marks: Marks) -> dict:
+    """Bot voice (0.8.0): `cc <@person>` as the last line of a send to others.
+
+    Plain `text` gets a text suffix (the message stays a plain message — a bot edit with `text` alone keeps
+    working); a send that carries `blocks` (the caller's, or the auto-split) gets a trailing section block;
+    the suffix methods (an upload's `initial_comment`, a /me message) a text suffix. A send that already
+    mentions the person is left alone."""
+    if not cc_applies(method, params, marks) or mentions_person(params, marks):
+        return params
+    line = cc_text(marks)
+    params = dict(params)
+    if method in CC_BLOCKS_METHODS:
+        blocks = params.get("blocks")
+        if blocks:
+            if len(blocks) < MAX_BLOCKS:                   # a full message keeps its 50 blocks; no cc rather than invalid_blocks
+                params["blocks"] = list(blocks) + [{"type": "section", "text": {"type": "mrkdwn", "text": line}}]
+        elif isinstance(params.get("text"), str) and params["text"]:
+            params["text"] = f"{params['text']}\n\n{line}"
+        return params
+    key = SUFFIX_METHODS[method]
+    if isinstance(params.get(key), str) and params[key]:
+        params[key] = f"{params[key]}\n\n{line}"
+    return params
 
 
 def split_text_into_sections(text: str) -> list[dict]:
@@ -110,9 +212,9 @@ def split_text_into_sections(text: str) -> list[dict]:
     ]
 
 
-def inject_attribution_block(params: dict, bot_user_id: str | None) -> dict:
+def inject_attribution_block(params: dict, marks: Marks) -> dict:
     """Append the :blue_heart: context block; plain `text` is wrapped (auto-split) first."""
-    block = attribution_block(bot_user_id)
+    block = attribution_block(marks)
     params = dict(params)
     existing_blocks = params.get("blocks", [])
     if not existing_blocks and "text" in params:
@@ -121,9 +223,9 @@ def inject_attribution_block(params: dict, bot_user_id: str | None) -> dict:
     return params
 
 
-def inject_attribution_suffix(params: dict, key: str, bot_user_id: str | None) -> dict:
+def inject_attribution_suffix(params: dict, key: str, marks: Marks) -> dict:
     params = dict(params)
-    params[key] = f"{params[key]}{attribution_suffix(bot_user_id)}"
+    params[key] = f"{params[key]}{attribution_suffix(marks)}"
     return params
 
 
@@ -153,22 +255,24 @@ def maybe_split_bot_text(params: dict) -> dict:
     return {**params, "blocks": split_text_into_sections(text)}
 
 
-def maybe_inject_attribution(method: str, params: dict, bot_user_id: str | None) -> dict:
+def maybe_inject_attribution(method: str, params: dict, marks: Marks) -> dict:
     """Method-aware attribution for person-voice recipient-facing sends (whitelist)."""
     if method in BLOCKS_METHODS:
-        return inject_attribution_block(params, bot_user_id)
+        return inject_attribution_block(params, marks)
     if method in SUFFIX_METHODS:
         key = SUFFIX_METHODS[method]
         if params.get(key):
-            return inject_attribution_suffix(params, key, bot_user_id)
+            return inject_attribution_suffix(params, key, marks)
     return params
 
 
-def shape_send(method: str, params: dict, as_bot: bool, bot_user_id: str | None) -> dict:
-    """Final params for a send: attribution (person voice) or bot auto-split.
+def shape_send(method: str, params: dict, as_bot: bool, marks) -> dict:
+    """Final params for a send: attribution (person voice), or bot auto-split and the cc (bot voice).
 
+    `marks` is `Marks.from_profile(profile)` (or, pre-0.8.0, the bot user id alone — `Marks.of`).
     `files.uploadV2`: the door-level `attribution` option is stripped; in block mode the
     comment leaves the upload (it becomes the composite's child post, see core)."""
+    marks = Marks.of(marks)
     if method == UPLOAD_METHOD:
         block = upload_block_mode(params, as_bot)
         params = {k: v for k, v in params.items() if k != UPLOAD_ATTRIBUTION_PARAM}
@@ -176,10 +280,10 @@ def shape_send(method: str, params: dict, as_bot: bool, bot_user_id: str | None)
             params = {k: v for k, v in params.items() if k != "initial_comment"}
             return params
     if not as_bot:
-        return maybe_inject_attribution(method, params, bot_user_id)
+        return maybe_inject_attribution(method, params, marks)
     if method in BOT_SPLIT_METHODS:
-        return maybe_split_bot_text(params)
-    return params
+        params = maybe_split_bot_text(params)
+    return maybe_inject_cc(method, params, marks)
 
 
 def with_op_metadata(method: str, params: dict, as_bot: bool, op_id: str, comm_id: str | None) -> dict:

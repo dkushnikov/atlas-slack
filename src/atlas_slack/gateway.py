@@ -27,7 +27,10 @@ mcp = FastMCP(
         "'initial_comment', 'thread_ts'}) — the gateway runs the 3-step "
         "getUploadURLExternal → PUT → completeUploadExternal flow itself; never PUT bytes by hand. "
         "Pass as_bot=True for posts/reactions/writes to appear as the bot; "
-        "as_bot=False (default) posts as the person with :blue_heart: @bot attribution. "
+        "as_bot=False (default) posts as the person with the :blue_heart: `Sent via @bot` mark (the label is the "
+        "profile's attribution_label). Bot-voice message sends to others carry `cc @<person>` as the last line when "
+        "the profile sets cc_person: true (never in the person's own DM, never on an ephemeral or a stream; a text "
+        "that already mentions the person gets no cc). "
         "chat.postMessage, chat.scheduleMessage, chat.update, chat.postEphemeral, chat.meMessage and "
         "files.uploadV2 run through the v2 core: the approval prompt shows the provenance, "
         "the human's decision is bound to that exact operation (change anything after approval → "
@@ -160,8 +163,10 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
         params: Method parameters as a dict. Refer to https://api.slack.com/methods/{method}
         as_bot: If True, use bot token — writes appear as the bot; no attribution, and
                 plain `text` over 3000 chars on chat.postMessage/update/scheduleMessage
-                is auto-split into expanded sections (caller `blocks` win). If False (default),
-                use user token — recipient-facing text sends get the :blue_heart: @<bot> attribution:
+                is auto-split into expanded sections (caller `blocks` win); with `cc_person: true`
+                in the profile, message sends to others end with `cc @<person>` (not in the person's
+                DM, not on chat.postEphemeral). If False (default),
+                use user token — recipient-facing text sends get the :blue_heart: `Sent via @<bot>` mark:
                 chat.postMessage / chat.update / chat.scheduleMessage / chat.postEphemeral
                 receive a Block Kit context block; files.uploadV2 / files.completeUploadExternal
                 initial_comment receives a text suffix. Other methods (reactions, pins, reads)
@@ -284,7 +289,7 @@ def slack_api(method: str, params: dict | None = None, as_bot: bool = False,
             call_params = {**call_params, "limit": DEFAULT_HISTORY_LIMIT}
         if method in BLOCKS_METHODS:
             _validate_caller_blocks(call_params)
-        call_params = _shaping_call(shaping.shape_send, method, call_params, as_bot, profile.bot_user_id)
+        call_params = _shaping_call(shaping.shape_send, method, call_params, as_bot, shaping.Marks.from_profile(profile))
         data = _response_data(client.api_call(method, params=_encode_nested(call_params)))
     except SlackApiError as e:
         code = _error_code_from(e)

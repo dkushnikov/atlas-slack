@@ -250,7 +250,7 @@ def execute_send(method: str, params: dict, as_bot: bool, provenance: dict | Non
         send_params = params
         if method == shaping.UPLOAD_METHOD:
             send_params = shaping.prepare_upload(params)          # resolved paths; already validated by the verdict
-        final = shaping.shape_send(method, send_params, as_bot, profile.bot_user_id)
+        final = shaping.shape_send(method, send_params, as_bot, shaping.Marks.from_profile(profile))
         final = shaping.with_op_metadata(method, final, as_bot, prov.op_id, prov.comm_id)   # never on chat.update
     except shaping.ShapingError as e:
         raise refused(_refuse(verdict, e.code, e.detail))
@@ -442,7 +442,7 @@ def _composite_comment(result: SendResult, params: dict, upload_data: dict, prov
         child_params["thread_ts"] = params["thread_ts"]
     child_id = f"{prov.op_id}.c1"
     try:
-        child_final = shaping.shape_send("chat.postMessage", child_params, False, profile.bot_user_id)
+        child_final = shaping.shape_send("chat.postMessage", child_params, False, shaping.Marks.from_profile(profile))
     except shaping.ShapingError as e:
         result.child_op_id, result.child_outcome, result.child_error = child_id, "error", f"{e.code}: {e.detail}"
         return

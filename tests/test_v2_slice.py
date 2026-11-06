@@ -169,7 +169,7 @@ def test_02_happy_path_person_voice_keeps_attribution(env):
     _, final, as_bot = env.transport.calls[0]
     assert as_bot is False
     assert final["blocks"][-1] == {"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f":blue_heart: <@{env.ids['bot_user_id']}>"}]}
+        {"type": "mrkdwn", "text": f":blue_heart: Sent via <@{env.ids['bot_user_id']}>"}]}
 
 
 # ---------------------------------------------------------------- 3 no decision
