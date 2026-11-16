@@ -5,7 +5,7 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 # atlas-slack — Slack for the person and their agent
 
-Works on its own. Where the official Slack MCP is installed too, the two coexist (that one covers canvas and semantic search; this one the full Web API, two voices, attribution and the write gate) — and when both could perform a write, use `slack_api`: the guarantees below (two voices, a decision per operation, the journal) apply only to calls made through it.
+Works on its own. Where the official Slack MCP is installed too, the two coexist (that one covers canvas and semantic search; this one the full Web API, two voices, attribution and the write gate) — and when both could perform a write, use `slack_api`: the guarantees below (two voices, a decision per operation, the journal) apply only to calls made through it. Reading a canvas's text does not need that MCP: `slack_api("canvases.getContent", …)` — Quick start, «Read or download the text of a canvas».
 
 Two tools, that's the whole surface (since v1.2; output contract v1.15, plugin 0.8.2):
 
@@ -39,8 +39,9 @@ Pick the row that matches your intent. The right column is what to call. Three l
 | Delete a message | `slack_api("chat.delete", {"channel": "C...", "ts": "<ts>"}, as_bot=?)` — transitional (compact card); `as_bot` must match the message's author token |
 | Upload a file | `slack_api("files.uploadV2", {"file": "/abs/path", "channel": "C...", "initial_comment": "..."}, as_bot=?)` — one call, core send (section below) |
 | Show something to one person only | `slack_api("chat.postEphemeral", {"channel": "C...", "user": "U...", "text": "..."}, as_bot=?)` — core send; the viewer is a bound recipient |
-| Download a Slack file to local disk | `slack_download(file_id)` — the JSON API never serves file bytes |
+| Download a Slack file to local disk | `slack_download(file_id)` — the JSON API never serves file bytes. Not for a canvas (an `F…` id too): see «Read or download the text of a canvas» below |
 | Slack's own transcript of a video/clip | `files.info` shows `transcription: complete (en-US) — "…"` + `vtt: available` when Slack has one → `slack_download(file_id, vtt=True)`; otherwise download the media — transcription is outside this plugin |
+| Read or download the text of a canvas | `slack_api("canvases.getContent", {"canvas_id": "F..."})` — a read; the whole canvas as one string, markdown by default, `"content_type": "html"` for HTML; extra scope `canvases:read`. To keep a copy, write the returned text to a file. Not `slack_download`: on a canvas it answers `access_denied` (`got HTML (Slack login page) instead of file bytes`) — the fix is this row, not that error's `try as_bot=…` hint |
 | See the raw JSON (e.g. the `blocks` of a message you just sent) | add `"_raw": true` to params — `slack_api("conversations.history", {"channel": "C...", "limit": 1, "_raw": true})`; delivery checks and debugging only |
 | Set the person's status | `slack_api("users.profile.set", {"profile": {"status_text": "...", "status_emoji": ":...:"}})` |
 | DND on/off | `slack_api("dnd.setSnooze", {"num_minutes": N})` · `slack_api("dnd.endSnooze", {})` |
