@@ -7,7 +7,7 @@ description: Use for ANY Slack operation — reads, writes, and preparation step
 
 Works on its own. Where the official Slack MCP is installed too, the two coexist (that one covers canvas and semantic search; this one the full Web API, two voices, attribution and the write gate) — and when both could perform a write, use `slack_api`: the guarantees below (two voices, a decision per operation, the journal) apply only to calls made through it. Reading a canvas's text does not need that MCP: `slack_api("canvases.getContent", …)` — Quick start, «Read or download the text of a canvas».
 
-Two tools, that's the whole surface (since v1.2; output contract v1.15, plugin 0.8.2):
+Two tools, that's the whole surface (since v1.2; output contract v1.15, plugin 0.8.3):
 
 - **`slack_api(method, params, as_bot=?)`** — every Slack Web API method (200+).
 - **`slack_download(file_id, out_dir?, as_bot?)`** — file bytes to local disk (the JSON API never serves file content).
