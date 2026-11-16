@@ -239,3 +239,67 @@ def test_sdk_346_methods_are_in_the_registry():
     assert not pm.classify("agents.conversations.listViews", {}).write
     assert pm.KNOWN_WRITE_ROWS["agents.conversations.setCanvasContent"] == 1
     assert pm.KNOWN_WRITE_ROWS["agents.conversations.create"] == 4
+
+
+# slack_sdk 3.46 → 3.47 (2026-11-13) added these 15 WebClient methods: name → (route, row). The classes follow
+# Slack's reference pages and the rows above: skills:read reads are row 0; a skill is a canvas, so create / update /
+# delete are row 1 as canvases.*; library.add / remove change only the caller's own library, row 6 as stars.*; the
+# admin API is refused whatever its effect, its reads included, as admin.users.getExpiration (3.46).
+SDK_347_METHODS = {
+    "slackbot.skills.info": ("read", 0), "slackbot.skills.list": ("read", 0),
+    "slackbot.skills.create": ("transitional", 1), "slackbot.skills.update": ("transitional", 1),
+    "slackbot.skills.delete": ("transitional", 1),
+    "slackbot.skills.library.add": ("transitional", 6), "slackbot.skills.library.remove": ("transitional", 6),
+    **{m: ("refused", 8) for m in (
+        "admin.slackbot.skills.list", "admin.slackbot.skills.publish", "admin.slackbot.skills.setAutoEnabled",
+        "admin.slackbot.skills.unpublish", "admin.apps.mcp.servers.list", "admin.apps.mcp.servers.permissions.list",
+        "admin.apps.mcp.servers.permissions.set", "admin.conversations.bulkSetProperties")},
+}
+
+
+def _installed_sdk() -> tuple:
+    from slack_sdk.version import __version__
+    return tuple(int(x) for x in re.findall(r"\d+", __version__)[:2])
+
+
+def test_sdk_347_methods_are_in_the_registry():
+    """Every 3.47 name has a row, whatever SDK is installed: the gateway dispatches any name through api_call,
+    so a host on 3.46 can call them too — the classification may not wait for the SDK bump."""
+    from atlas_slack import policy as pm
+    assert len(SDK_347_METHODS) == 15
+    names = pm._registry_names()
+    missing = [m for m in SDK_347_METHODS if m not in names]
+    assert missing == [], missing
+    for m, (route, row) in SDK_347_METHODS.items():
+        eff = pm.classify(m, {})
+        assert (eff.route, eff.row) == (route, row), (m, eff)
+        assert eff.write is (route != "read"), m
+        assert eff.transitional is (route == "transitional"), m
+        assert "unregistered" not in eff.note, m                  # never the GATE-003 heuristic
+    assert "admin API" in pm.classify("admin.apps.mcp.servers.permissions.set", {}).note
+
+
+def test_sdk_347_admin_reads_refused_at_the_hook():
+    """The two admin `.list` reads matched the legacy read heuristic and the hook auto-allowed them (0.8.2);
+    registered, they deny like every admin name. The skills:read pair stays allowed, a skill write asks."""
+    from test_hooks import api
+    for m in ("admin.slackbot.skills.list", "admin.apps.mcp.servers.list", "admin.apps.mcp.servers.permissions.list",
+              "admin.slackbot.skills.publish", "admin.apps.mcp.servers.permissions.set"):
+        out = api(m)
+        assert out["permissionDecision"] == "deny", m
+        assert f"method_refused: {m}: row 8 — admin API" in out["permissionDecisionReason"], m
+    assert api("slackbot.skills.list")["permissionDecision"] == "allow"
+    assert api("slackbot.skills.info", {"skill_id": "F0SKILL1"})["permissionDecision"] == "allow"
+    for m in ("slackbot.skills.create", "slackbot.skills.library.add"):
+        out = api(m)
+        assert out["permissionDecision"] == "ask", m
+        assert "transitional" in out["permissionDecisionReason"], m
+
+
+@pytest.mark.skipif(_installed_sdk() < (3, 47), reason="slack_sdk < 3.47 installed: the 15 names are not WebClient "
+                                                       "attributes yet; the registry test above runs regardless")
+def test_sdk_347_methods_exist_in_the_installed_sdk():
+    """The other half of the 3.46 test's SDK check: the names are the SDK's own spelling (camelCase kept)."""
+    from slack_sdk import WebClient
+    absent = [m for m in SDK_347_METHODS if not hasattr(WebClient, m.replace(".", "_"))]
+    assert absent == [], absent

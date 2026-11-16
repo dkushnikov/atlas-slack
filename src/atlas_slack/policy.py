@@ -56,6 +56,7 @@ READ_METHODS = frozenset({
     "reactions.get", "reactions.list",
     "reminders.info", "reminders.list",
     "search.all", "search.files", "search.messages",
+    "slackbot.skills.info", "slackbot.skills.list",          # scope skills:read (3.47)
     "stars.list",
     "team.info", "team.profile.get",
     "usergroups.list", "usergroups.users.list",
@@ -92,6 +93,14 @@ REFUSED_METHODS = {
     "admin.users.getExpiration": "row 8 — admin API (org-level token), not a door surface",
     "apps.user.connection.requestAuth": "row 8 — app-connection management is the Demiurge path",
     "apps.user.connection.bulkUpdate": "row 8 — app-connection management is the Demiurge path",
+    # slack_sdk 3.47 (2026-11-13): the admin API stays outside the door, its reads included (as
+    # admin.users.getExpiration) — an admin user token on an org-installed app, org-wide effects.
+    **{m: "row 8 — admin API (org-level token), not a door surface" for m in (
+        "admin.slackbot.skills.list", "admin.slackbot.skills.publish",
+        "admin.slackbot.skills.setAutoEnabled", "admin.slackbot.skills.unpublish",
+        "admin.apps.mcp.servers.list", "admin.apps.mcp.servers.permissions.list",
+        "admin.apps.mcp.servers.permissions.set", "admin.conversations.bulkSetProperties",
+    )},
 }
 
 # Known writes → A3 row, for verdict text and `_rights`; executed on the
@@ -104,6 +113,8 @@ KNOWN_WRITE_ROWS = {
         "reminders.add", "conversations.setTopic", "conversations.setPurpose", "conversations.rename",
         "canvases.create", "canvases.edit", "canvases.delete", "views.publish",
         "agents.conversations.setCanvasContent",   # content into the agent conversation (3.45)
+        "slackbot.skills.create", "slackbot.skills.update",   # a skill is a canvas: as canvases.* (3.47);
+        "slackbot.skills.delete",                  # delete also drops it from every library and the org catalog
     )},
     **{m: 3 for m in ("reactions.add", "reactions.remove", "pins.add", "pins.remove",
                       "bookmarks.add", "bookmarks.edit", "bookmarks.remove")},
@@ -118,7 +129,8 @@ KNOWN_WRITE_ROWS = {
     **{m: 5 for m in ("users.profile.set", "users.setPresence", "users.setPhoto", "dnd.setSnooze",
                       "dnd.endSnooze", "dnd.endDnd")},
     **{m: 6 for m in ("conversations.mark", "stars.add", "stars.remove", "reminders.complete",
-                      "reminders.delete")},
+                      "reminders.delete",
+                      "slackbot.skills.library.add", "slackbot.skills.library.remove")},   # the caller's own library (3.47)
     **{m: 7 for m in ("files.sharedPublicURL", "files.revokePublicURL")},
 }
 
