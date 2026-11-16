@@ -46,7 +46,8 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False, vtt: b
 
     Args:
         file_id: Slack file ID (e.g. 'F0123ABCDEF') — from files.list, files.info,
-                 or a message's files attachment.
+                 or a message's files attachment. Not a canvas (an F… id too): read its text with
+                 slack_api("canvases.getContent", {"canvas_id": "F…"}).
         out_dir: Directory to save into. Default: ~/Downloads/slack (created if missing).
         as_bot: If True, download with the bot token (file must be visible to Atlas).
                 If False (default), use the person's user token (broadest file visibility).
@@ -89,10 +90,16 @@ def slack_download(file_id: str, out_dir: str = "", as_bot: bool = False, vtt: b
         content_type = (resp.headers.get("content-type") or "").lower()
         file_is_html = (f.get("mimetype") or "").lower().startswith("text/html") or f.get("filetype") in ("html", "htm")
         if content_type.startswith("text/html") and not file_is_html:
+            # A canvas (an F… id too) answers the same way under either token, so the canvas route comes first:
+            # the as_bot hint alone sent a session into a second failure. No canvas detection from files.info —
+            # the text covers both cases.
             raise ToolError(format_error(
                 "access_denied",
                 f"got HTML (Slack login page) instead of file bytes for {file_id} — "
-                f"the {'bot' if as_bot else 'user'} token can't access this file; try as_bot={not as_bot}",
+                f"if it is a canvas, read it with slack_api(\"canvases.getContent\", {{\"canvas_id\": \"{file_id}\"}}) "
+                f"(a read, scope canvases:read): slack_download does not fetch a canvas, and as_bot={not as_bot} "
+                f"repeats this error; any other file: the {'bot' if as_bot else 'user'} token can't access it, "
+                f"try as_bot={not as_bot}",
             ))
 
         target_dir = Path(out_dir).expanduser() if out_dir else Path.home() / "Downloads" / "slack"

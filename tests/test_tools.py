@@ -82,6 +82,26 @@ def test_download_html_login_page_detected(mock_webclient, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("as_bot", [False, True])
+def test_download_html_names_the_canvas_route_before_the_token_hint(mock_webclient, tmp_path, as_bot):
+    """A canvas answers with the login page under either token: the as_bot hint alone was a false lead. The
+    error names the canvas read first, with this file's id, then the token hint for any other file."""
+    mock_webclient.files_info.return_value = _file_info(fid="F0CANVAS1", name="Plan", mimetype="application/octet-stream")
+    login_page = _http_response(content=b"<html>Sign in to Slack</html>", content_type="text/html")
+    with patch("atlas_slack.tools.httpx.get", return_value=login_page):
+        with pytest.raises(ToolError) as exc_info:
+            slack_download("F0CANVAS1", out_dir=str(tmp_path), as_bot=as_bot)
+    text = str(exc_info.value)
+    route = 'slack_api("canvases.getContent", {"canvas_id": "F0CANVAS1"})'
+    voice, other = ("bot", "False") if as_bot else ("user", "True")
+    assert text.startswith("Error: access_denied — got HTML (Slack login page) instead of file bytes for F0CANVAS1")
+    assert route in text and "canvases:read" in text
+    assert f"as_bot={other} repeats this error" in text
+    assert text.endswith(f"any other file: the {voice} token can't access it, try as_bot={other}")
+    assert text.index(route) < text.index(f"try as_bot={other}")
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_download_html_file_itself_is_allowed(mock_webclient, tmp_path):
     """An actual .html file legitimately comes back as text/html — not a login page."""
     mock_webclient.files_info.return_value = _file_info(name="page.html", mimetype="text/html", filetype="html")
